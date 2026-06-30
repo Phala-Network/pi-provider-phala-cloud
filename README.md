@@ -1,0 +1,121 @@
+# Pi extension for Phala Cloud Confidential AI
+
+[![npm](https://img.shields.io/npm/v/pi-provider-phala-cloud)](https://www.npmjs.com/package/pi-provider-phala-cloud)
+[![license](https://img.shields.io/npm/l/pi-provider-phala-cloud)](./LICENSE)
+
+**Use Phala Cloud Confidential AI in Pi, with per-response verifiability in the footer.**
+
+Phala Cloud serves OpenAI-compatible models through an attested gateway at
+`https://inference.phala.com/v1`. Every response carries a signed receipt id
+(`x-receipt-id`) that you can fetch and verify against the gateway's attestation
+report. This extension wires that into Pi: chat works like any OpenAI provider,
+and the footer updates to `verified` / `routed` / `attested` after each response.
+
+## What this package adds
+
+- **OpenAI-compatible provider** registered as `phala-cloud`, with model
+  discovery from `/v1/models` (no hardcoded catalog).
+- **Thinking support.** Qwen3 models get `enable_thinking` via pi's built-in
+  openai-completions handler; streaming `reasoning_content` is surfaced as pi
+  thinking blocks. No custom stream handler needed.
+- **`is_tee` filtering.** Only confidentially-served models are registered by
+  default; toggle in `/phala-cloud-settings`.
+- **Footer verification.** After each response the footer shows whether the
+  receipt's `upstream.verified` was `verified` (confidential) or `routed`.
+- **`/phala-cloud-settings`** to configure TEE-only filtering, thinking format,
+  and auto-verification, with home and project config scope.
+- **E2EE-ready architecture.** Request header construction is isolated in
+  `src/headers.ts` so a future end-to-end-encryption pass plugs in without
+  reworking the provider. E2EE is not implemented yet.
+
+## Install
+
+From npm:
+
+```bash
+pi install npm:pi-provider-phala-cloud
+```
+
+Or load a local checkout:
+
+```bash
+pi -e /path/to/pi-provider-phala-cloud
+```
+
+### Programmatic usage
+
+```typescript
+import { main } from "@earendil-works/pi-coding-agent";
+import { PhalaCloud } from "pi-provider-phala-cloud";
+
+main(process.argv.slice(2), {
+  extensionFactories: [PhalaCloud()],
+});
+```
+
+## Sign in
+
+Phala Cloud uses API keys (no OAuth yet). Create a key in the Phala dashboard
+under **Confidential AI API**, then set `PHALA_LLM_API_KEY`. This is separate
+from the CVM-management credential (`PHALA_CLOUD_API_KEY` in the `@phala/cloud`
+SDK); the two are not interchangeable.
+
+```bash
+PHALA_LLM_API_KEY=... pi
+```
+
+## Model
+
+Select a model inside Pi:
+
+```text
+/model phala-cloud/phala/qwen3.5-27b
+```
+
+Model ids come from the live `/v1/models` catalog. When discovery has no API
+key, a small fallback list is used.
+
+## Thinking
+
+For Qwen3-family models, pi's thinking level maps to `enable_thinking`:
+
+```text
+/thinking medium   # enable_thinking: true
+/thinking off      # enable_thinking: false
+```
+
+Other model families default to no thinking parameter. Set the thinking format
+in `/phala-cloud-settings` if you need to force `qwen`, `openai`
+(`reasoning_effort`), or `off`.
+
+## Verification
+
+Each response includes `x-receipt-id`, `x-aci-identity`, and
+`x-aci-keyset-digest` headers. The extension captures them and, after the
+stream finishes, fetches the receipt and classifies it:
+
+- **verified** — `upstream.verified.result === "verified"` and `required === true`
+  (confidential upstream, channel-bound).
+- **routed** — `result === "failed"`, `required === false` (gateway attested,
+  upstream not).
+- **attested** — headers present, receipt fetch pending or unavailable.
+
+Disable auto-fetch in `/phala-cloud-settings` if you do not want the extension
+to call `/v1/aci/receipts/{id}` after each response.
+
+## Configure
+
+```text
+/phala-cloud-settings
+```
+
+Toggle TEE-only model registration, thinking format, and auto-verification.
+Config is layered: project (`.pi/providers/phala-cloud/config.json`, gated by
+project trust) overrides home (`~/.pi/providers/phala-cloud/config.json`),
+which overrides defaults. Environment variables (`PHALA_CLOUD_API_PREFIX`,
+`PHALA_CLOUD_IS_TEE_ONLY`, `PHALA_CLOUD_THINKING_FORMAT`, `PHALA_CLOUD_AUTO_VERIFY`)
+override both.
+
+## License
+
+MIT
