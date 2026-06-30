@@ -5,6 +5,9 @@
 export const PROVIDER_ID = "phala-cloud";
 export const PROVIDER_VERSION = "0.1.0";
 
+/** Status bar key used for the per-response verification footer. */
+export const FOOTER_STATUS_KEY = "phala-cloud";
+
 export const DEFAULT_BASE_URL = "https://inference.phala.com/v1";
 
 // API key env var. The provider registers with apiKey "$PHALA_LLM_API_KEY" so pi

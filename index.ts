@@ -49,6 +49,7 @@ import {
 } from "./src/config.ts";
 import {
   API_KEY_ENV,
+  FOOTER_STATUS_KEY,
   PROVIDER_ID,
   PROVIDER_VERSION,
 } from "./src/constants.ts";
@@ -60,7 +61,7 @@ import {
   mapPhalaServerModel,
 } from "./src/models.ts";
 import { isPhalaProjectConfigApproved } from "./src/project-trust.ts";
-import { PhalaReceiptStore } from "./src/receipt-store.ts";
+import { footerText, PhalaReceiptStore } from "./src/receipt-store.ts";
 import {
   type PhalaConfigScope,
   THINKING_FORMAT_VALUES,
@@ -214,6 +215,13 @@ function applyEffectiveConfig(
 ): void {
   reloadEffectiveConfig(state, cwd, projectTrusted);
   registerPhalaProvider(pi, state);
+}
+
+function updateFooter(
+  ctx: { ui: { setStatus: (key: string, text: string | undefined) => void } },
+  state: PhalaRuntimeState,
+): void {
+  ctx.ui.setStatus(FOOTER_STATUS_KEY, footerText(state.store));
 }
 
 async function openSettingsMenu(
@@ -435,6 +443,7 @@ export function PhalaCloud(overrides?: PhalaCloudConfigPatch): ExtensionFactory 
     pi.on("after_provider_response", (event, ctx) => {
       if (ctx.model?.provider !== PROVIDER_ID) return;
       state.store.recordResponseHeaders(event.headers);
+      updateFooter(ctx, state);
     });
 
     pi.on("message_end", (event, ctx) => {
@@ -448,6 +457,7 @@ export function PhalaCloud(overrides?: PhalaCloudConfigPatch): ExtensionFactory 
         } catch (error) {
           console.error("[phala-cloud] receipt classification failed:", error);
         }
+        updateFooter(ctx, state);
       })();
     });
 

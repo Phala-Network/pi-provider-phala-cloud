@@ -19,6 +19,7 @@ import {
   attestationStaleAfter,
   fetchAttestation,
   fetchReceipt,
+  isFullyVerified,
   validateAciReportBinding,
   verifyReceipt,
 } from "./verify.ts";
@@ -162,6 +163,29 @@ export class PhalaReceiptStore {
 // verify.ts but we want a basic-only variant here that does not require the
 // full verify path.
 import { classifyReceipt as classifyBasic } from "./verify.ts";
+
+// Footer status text. No emoji per project conventions.
+//   fully verified (workload + signature + hashes) -> "phala-cloud: verified"
+//   receipt verified but signature/hash not checked -> "phala-cloud: verified*"
+//   routed (upstream not attested)                 -> "phala-cloud: routed"
+//   workload mismatch                              -> "phala-cloud: mismatch"
+//   attestation/report pending                     -> "phala-cloud: attested"
+//   no receipt header                              -> "phala-cloud: (no receipt)"
+export function footerText(store: PhalaReceiptStore): string {
+  const snap = store.snapshot();
+  const classification = store.classification;
+
+  if (classification) {
+    if (classification.workloadMatched === false) return "phala-cloud: mismatch";
+    if (classification.status === "routed") return "phala-cloud: routed";
+    if (isFullyVerified(classification)) return "phala-cloud: verified";
+    if (classification.status === "verified") return "phala-cloud: verified*";
+    return "phala-cloud: attested";
+  }
+
+  if (snap.receiptId || snap.aciIdentity) return "phala-cloud: attested";
+  return "phala-cloud: (no receipt)";
+}
 
 function lowerHeaders(headers: Record<string, string>): Record<string, string> {
   const out: Record<string, string> = {};
