@@ -6,7 +6,7 @@
  *
  * Usage:
  *   pi -e ~/workshop/pi-provider-phala-cloud
- *   # Set PHALA_LLM_API_KEY=..., then /model phala-cloud/<model-id>
+ *   # Then /login phala-cloud (or set PHALA_LLM_API_KEY), then /model phala-cloud/<model-id>
  *
  * Source layout:
  *   src/constants.ts     — module-level consts + env-driven endpoints
@@ -26,15 +26,20 @@ import {
   type ExtensionAPI,
   type ExtensionCommandContext,
   type ExtensionFactory,
+  readStoredCredential,
 } from "@earendil-works/pi-coding-agent";
 import {
   type Api,
   type AssistantMessageEventStream,
   type Context,
   type Model,
+  type OAuthCredentials,
+  type OAuthLoginCallbacks,
+  type ProviderHeaders,
   type SimpleStreamOptions,
+  createAssistantMessageEventStream,
   streamSimpleOpenAICompletions,
-} from "@earendil-works/pi-ai";
+} from "@earendil-works/pi-ai/compat";
 import { type SettingItem, SettingsList, truncateToWidth } from "@earendil-works/pi-tui";
 import os from "node:os";
 
@@ -52,6 +57,7 @@ import {
   FOOTER_STATUS_KEY,
   PROVIDER_ID,
   PROVIDER_VERSION,
+  getCloudApiBase,
 } from "./src/constants.ts";
 import { buildPhalaHeaders, generateE2eeMaterial } from "./src/headers.ts";
 import {
@@ -85,6 +91,19 @@ interface PhalaRuntimeState {
 }
 
 function resolveApiKey(): string {
+  // Prefer the credential stored by /login (auth.json) to match pi's own
+  // auth resolution; fall back to the env var.
+  try {
+    const stored = readStoredCredential(PROVIDER_ID);
+    if (stored?.type === "oauth" && typeof stored.access === "string" && stored.access) {
+      return stored.access;
+    }
+    if (stored?.type === "api_key" && typeof stored.key === "string" && stored.key) {
+      return stored.key;
+    }
+  } catch {
+    // auth.json unreadable; fall through to env.
+  }
   return process.env[API_KEY_ENV]?.trim() || "";
 }
 
@@ -117,6 +136,112 @@ async function resolveE2eeKey(
   return undefined;
 }
 
+interface DeviceCodeResponse {
+  device_code: string;
+  user_code: string;
+  verification_uri: string;
+  verification_uri_complete?: string;
+  expires_in: number;
+  interval: number;
+}
+
+interface DeviceTokenResponse {
+  access_token: string;
+  expires_in?: number | null;
+  redpill_key_id?: number | null;
+}
+
+interface PrivateAiSelfResponse {
+  user?: { username?: string };
+  workspace?: { name?: string; slug?: string | null };
+  credits?: { balance?: string; granted_balance?: string };
+}
+
+// RFC 8628 device authorization against Phala Cloud. On approval the consume
+// step (scope "redpill:api-key") issues a Redpill LLM virtual key — no phak_
+// cloud token is created. The key does not expire and cannot be refreshed, so
+// `expires` is set far in the future and refreshToken() always throws.
+async function loginPhalaDeviceFlow(callbacks: OAuthLoginCallbacks): Promise<OAuthCredentials> {
+  const cloudApi = getCloudApiBase();
+  const codeRes = await fetch(`${cloudApi}/api/v1/auth/device/code`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ client_id: "pi", scope: "redpill:api-key" }),
+    signal: callbacks.signal,
+  });
+  if (!codeRes.ok) {
+    throw new Error(`Device authorization request failed: ${await codeRes.text()}`);
+  }
+  const code = (await codeRes.json()) as DeviceCodeResponse;
+
+  callbacks.onDeviceCode({
+    userCode: code.user_code,
+    verificationUri: code.verification_uri_complete ?? code.verification_uri,
+    intervalSeconds: code.interval,
+    expiresInSeconds: code.expires_in,
+  });
+
+  const deadline = Date.now() + code.expires_in * 1000;
+  let token: DeviceTokenResponse | undefined;
+  while (Date.now() < deadline) {
+    if (callbacks.signal?.aborted) throw new Error("Login cancelled");
+    callbacks.onProgress?.("Waiting for authorization...");
+    // The server long-polls up to ~25s per request and answers 400 with
+    // { detail: { error } } on pending/expired/denied; rate-limit and
+    // key-cap failures surface as structured 4xx from the consume step.
+    const tokenRes = await fetch(`${cloudApi}/api/v1/auth/device/token`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        device_code: code.device_code,
+        grant_type: "urn:ietf:params:oauth:grant-type:device_code",
+      }),
+      signal: callbacks.signal,
+    });
+    if (tokenRes.ok) {
+      token = (await tokenRes.json()) as DeviceTokenResponse;
+      break;
+    }
+    const body = (await tokenRes.json().catch(() => undefined)) as
+      | { detail?: { error?: string; error_description?: string } | string }
+      | undefined;
+    const detail = body?.detail;
+    const errorCode = typeof detail === "object" && detail ? detail.error : undefined;
+    if (errorCode === "authorization_pending") continue;
+    const description =
+      (typeof detail === "object" && detail ? detail.error_description : undefined) ??
+      (typeof detail === "string" ? detail : undefined) ??
+      `HTTP ${tokenRes.status}`;
+    throw new Error(`Device authorization failed: ${description}`);
+  }
+  if (!token) throw new Error("Device authorization expired");
+
+  const credentials: OAuthCredentials = {
+    refresh: "",
+    access: token.access_token,
+    expires: Date.now() + 100 * 365 * 24 * 60 * 60 * 1000,
+  };
+  if (typeof token.redpill_key_id === "number") {
+    credentials.redpill_key_id = token.redpill_key_id;
+  }
+
+  // Best-effort display metadata from the LLM-key self endpoint.
+  try {
+    const selfRes = await fetch(`${cloudApi}/api/v1/private_ai/self`, {
+      headers: { Authorization: `Bearer ${token.access_token}` },
+    });
+    if (selfRes.ok) {
+      const self = (await selfRes.json()) as PrivateAiSelfResponse;
+      if (self.user?.username) credentials.username = self.user.username;
+      if (self.workspace?.slug) credentials.workspace_slug = self.workspace.slug;
+      if (self.workspace?.name) credentials.workspace_name = self.workspace.name;
+    }
+  } catch {
+    // Metadata is display-only; login still succeeds without it.
+  }
+  return credentials;
+}
+
 function registerPhalaProvider(pi: ExtensionAPI, state: PhalaRuntimeState): void {
   const config = state.config;
   const providerConfig: Parameters<ExtensionAPI["registerProvider"]>[1] = {
@@ -125,13 +250,30 @@ function registerPhalaProvider(pi: ExtensionAPI, state: PhalaRuntimeState): void
     api: "openai-completions",
     authHeader: true,
     models: modelsFromState(state),
+    oauth: {
+      name: "Phala Cloud",
+      login: loginPhalaDeviceFlow,
+      // Redpill LLM keys do not expire and have no rotation endpoint; a dead
+      // key surfaces as a 401 and the user re-runs /login to mint a new one.
+      refreshToken: () => {
+        throw new Error("Phala LLM keys cannot be refreshed; run /login phala-cloud again");
+      },
+      getApiKey: (credentials) => credentials.access,
+    },
   };
 
   if (config.e2ee.enabled) {
-    // E2EE path: inject headers per request and encrypt payload fields in the
-    // onPayload hook. The built-in openai-completions handler still builds the
-    // OpenAI request and parses the SSE stream; we only transform the body and
-    // add headers.
+    // E2EE path (ACI v2, spec §7). The built-in openai-completions handler
+    // builds the OpenAI request and parses the SSE stream; around it we:
+    //   1. resolve the gateway E2EE key from a verified attestation,
+    //   2. put the X-E2EE-* headers into options.headers BEFORE the client is
+    //      created (the handler reads headers before onPayload — injecting
+    //      them in onPayload never reaches the wire),
+    //   3. encrypt content fields in onPayload (§7.2, JCS AAD per §7.3),
+    //   4. decrypt response fields through an options.fetch wrapper, since the
+    //      gateway encrypts response/stream chunks to X-Client-Pub-Key.
+    // Fail-closed: when the attested key is unavailable we error instead of
+    // sending the prompt in cleartext under an E2EE-enabled config.
     providerConfig.streamSimple = (
       model: Model<Api>,
       context: Context,
@@ -246,7 +388,10 @@ async function openSettingsMenu(
       list.updateValue("scope", scope);
       list.updateValue("isTeeOnly", drafts[scope].models.isTeeOnly ? "true" : "false");
       list.updateValue("thinkingFormat", drafts[scope].models.thinkingFormat);
-      list.updateValue("autoFetchReceipt", drafts[scope].verify.autoFetchReceipt ? "true" : "false");
+      list.updateValue(
+        "autoFetchReceipt",
+        drafts[scope].verify.autoFetchReceipt ? "true" : "false",
+      );
       list.updateValue("e2ee", drafts[scope].e2ee.enabled ? "true" : "false");
     };
 
@@ -278,7 +423,8 @@ async function openSettingsMenu(
         return;
       }
       if (id === "thinkingFormat") {
-        drafts[scope].models.thinkingFormat = newValue as PhalaCloudConfig["models"]["thinkingFormat"];
+        drafts[scope].models.thinkingFormat =
+          newValue as PhalaCloudConfig["models"]["thinkingFormat"];
         list.updateValue(id, newValue);
         save();
         return;
@@ -375,7 +521,7 @@ async function runAttestationCommand(
 ): Promise<void> {
   const apiKey = resolveApiKey();
   if (!apiKey) {
-    ctx.ui.notify("PHALA_LLM_API_KEY not set", "error");
+    ctx.ui.notify("Not signed in: run /login phala-cloud or set PHALA_LLM_API_KEY", "error");
     return;
   }
   const attested = await state.store.getAttestation(apiKey, state.config);
@@ -388,10 +534,18 @@ async function runAttestationCommand(
   const binding = attested.binding;
   const keyset = report.attestation?.workload_keyset;
   const e2eeKeys = Array.isArray(keyset?.e2ee_public_keys)
-    ? (keyset!.e2ee_public_keys as Array<{ key_id?: unknown; algo?: unknown; public_key?: unknown }>)
+    ? (keyset!.e2ee_public_keys as Array<{
+        key_id?: unknown;
+        algo?: unknown;
+        public_key?: unknown;
+      }>)
     : [];
   const receiptKeys = Array.isArray(keyset?.receipt_signing_keys)
-    ? (keyset!.receipt_signing_keys as Array<{ key_id?: unknown; algo?: unknown; public_key?: unknown }>)
+    ? (keyset!.receipt_signing_keys as Array<{
+        key_id?: unknown;
+        algo?: unknown;
+        public_key?: unknown;
+      }>)
     : [];
   const freshness = report.attestation?.freshness ?? {};
   const keySummary = (keys: Array<{ key_id?: unknown; algo?: unknown }>) =>

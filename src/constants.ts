@@ -10,6 +10,16 @@ export const FOOTER_STATUS_KEY = "phala-cloud";
 
 export const DEFAULT_BASE_URL = "https://inference.phala.com/v1";
 
+// Phala Cloud (teahouse) API base for account-level endpoints: the OAuth
+// device authorization flow and the LLM-key self lookup live here, not on
+// the inference gateway.
+export const DEFAULT_CLOUD_API_URL = "https://cloud-api.phala.com";
+
+export function getCloudApiBase(): string {
+  const value = process.env.PHALA_CLOUD_API_BASE_URL || DEFAULT_CLOUD_API_URL;
+  return value.trim().replace(/\/+$/, "") || DEFAULT_CLOUD_API_URL;
+}
+
 // API key env var. The provider registers with apiKey "$PHALA_LLM_API_KEY" so pi
 // resolves it from the environment; this const is used for direct calls
 // (model discovery, receipt/attestation fetch) that bypass pi's provider
