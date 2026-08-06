@@ -18,6 +18,7 @@ import { bytesToHex } from "@noble/hashes/utils.js";
 import type { PhalaCloudConfig } from "./config.ts";
 
 export interface E2eeHeaderMaterial {
+  clientSecret: Uint8Array;
   clientPublicKeyHex: string;
   modelPublicKeyHex: string;
   nonce: string;
@@ -26,10 +27,9 @@ export interface E2eeHeaderMaterial {
 
 /**
  * Build the E2EE request headers. Returns an empty record when E2EE is
- * disabled. The client keypair is ephemeral per request: we only need the
- * public key on the wire (the gateway encrypts its response to it, but for
- * the LLM hop the gateway returns cleartext to the client, so we do not hold
- * the private key for decryption here).
+ * disabled. The client keypair is ephemeral per request; the private half
+ * (E2eeHeaderMaterial.clientSecret) decrypts the response fields the gateway
+ * encrypts to X-Client-Pub-Key.
  */
 export function buildPhalaHeaders(
   config: PhalaCloudConfig,
@@ -47,9 +47,10 @@ export function buildPhalaHeaders(
 
 /** Generate ephemeral E2EE material for one request. */
 export function generateE2eeMaterial(modelPublicKeyHex: string): E2eeHeaderMaterial {
-  const secret = randomBytes(32);
-  const clientPublicKeyHex = bytesToHex(getPublicKey(secret, false));
-  const nonce = randomBytes(16).toString("hex");
+  const clientSecret = randomBytes(32);
+  const clientPublicKeyHex = bytesToHex(getPublicKey(clientSecret, false));
+  // ACI v2 (spec §7.5): 32 random bytes, hex-encoded as 64 characters.
+  const nonce = randomBytes(32).toString("hex");
   const timestamp = Math.floor(Date.now() / 1000);
-  return { clientPublicKeyHex, modelPublicKeyHex, nonce, timestamp };
+  return { clientSecret, clientPublicKeyHex, modelPublicKeyHex, nonce, timestamp };
 }

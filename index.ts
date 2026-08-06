@@ -77,7 +77,12 @@ import {
   settingsTitle,
   verifySummary,
 } from "./src/settings-ui.ts";
-import { encryptRequestPayload } from "./src/e2ee.ts";
+import {
+  type E2eeRequestParams,
+  createResponseDecryptor,
+  decryptE2eeResponse,
+  encryptRequestPayload,
+} from "./src/e2ee.ts";
 
 interface PhalaRuntimeState {
   cwd: string;
@@ -279,50 +284,96 @@ function registerPhalaProvider(pi: ExtensionAPI, state: PhalaRuntimeState): void
       context: Context,
       options?: SimpleStreamOptions,
     ): AssistantMessageEventStream => {
-      const apiKey = resolveApiKey();
-      const baseHeaders: Record<string, string> = { ...(options?.headers) };
-      const originalOnPayload = options?.onPayload;
+      const stream = createAssistantMessageEventStream();
+      (async () => {
+        try {
+          // pi resolves the stored /login credential (or env fallback) into
+          // options.apiKey; the extension-level resolver covers direct calls.
+          const apiKey = options?.apiKey?.trim() || resolveApiKey();
+          const modelPub = await resolveE2eeKey(state, apiKey);
+          if (!modelPub) {
+            throw new Error(
+              "E2EE is enabled but the gateway E2EE key is unavailable (attestation failed)",
+            );
+          }
+          const material = generateE2eeMaterial(modelPub);
+          const headers: ProviderHeaders = {
+            ...options?.headers,
+            ...buildPhalaHeaders(config, material),
+          };
+          const e2eeParams: E2eeRequestParams = {
+            modelPublicKeyHex: material.modelPublicKeyHex,
+            nonce: material.nonce,
+            timestamp: material.timestamp,
+            algo: "secp256k1-aes-256-gcm-hkdf-sha256",
+            model: model?.id ?? "",
+          };
+          const decryptor = createResponseDecryptor(material.clientSecret, e2eeParams);
+          const originalOnPayload = options?.onPayload;
+          const baseFetch = options?.fetch ?? fetch;
 
-      const patchedOptions: SimpleStreamOptions = {
-        ...options,
-        headers: baseHeaders,
-        onPayload: async (payload: unknown, modelData: unknown) => {
-          let nextPayload = payload;
-          if (nextPayload && typeof nextPayload === "object") {
-            const obj = nextPayload as Record<string, unknown>;
-            const modelId = typeof obj.model === "string" ? obj.model : model?.id ?? "";
-            try {
-              const modelPub = await resolveE2eeKey(state, apiKey);
-              if (modelPub) {
-                const material = generateE2eeMaterial(modelPub);
-                const e2eeHeaders = buildPhalaHeaders(config, material);
-                Object.assign(baseHeaders, e2eeHeaders);
-                encryptRequestPayload(obj, {
-                  modelPublicKeyHex: material.modelPublicKeyHex,
-                  nonce: material.nonce,
-                  timestamp: material.timestamp,
-                  algo: "secp256k1-aes-256-gcm-hkdf-sha256",
-                  model: modelId,
-                });
+          const patchedOptions: SimpleStreamOptions = {
+            ...options,
+            headers,
+            fetch: (async (input: RequestInfo | URL, init?: RequestInit) => {
+              const res = await baseFetch(input, init);
+              return decryptE2eeResponse(res, decryptor);
+            }) as typeof fetch,
+            onPayload: async (payload: unknown, modelData: unknown) => {
+              let nextPayload = payload;
+              if (nextPayload && typeof nextPayload === "object") {
+                const obj = nextPayload as Record<string, unknown>;
+                // The receipt's request.received.body_hash covers the body
+                // AFTER E2EE field decryption (spec §8.2), i.e. the
+                // pre-encryption payload bytes.
                 state.store.setLastRequestBody(new TextEncoder().encode(JSON.stringify(obj)));
+                encryptRequestPayload(obj, {
+                  ...e2eeParams,
+                  model: typeof obj.model === "string" ? obj.model : e2eeParams.model,
+                });
               }
-            } catch (error) {
-              console.error("[phala-cloud] E2EE encrypt failed:", error);
-            }
-          }
-          if (originalOnPayload) {
-            const res = await originalOnPayload(nextPayload, modelData as Model<Api>);
-            if (res !== undefined) nextPayload = res;
-          }
-          return nextPayload;
-        },
-      };
+              if (originalOnPayload) {
+                const res = await originalOnPayload(nextPayload, modelData as Model<Api>);
+                if (res !== undefined) nextPayload = res;
+              }
+              return nextPayload;
+            },
+          };
 
-      return streamSimpleOpenAICompletions(
-        model as Model<"openai-completions">,
-        context,
-        patchedOptions,
-      );
+          const inner = streamSimpleOpenAICompletions(
+            model as Model<"openai-completions">,
+            context,
+            patchedOptions,
+          );
+          for await (const event of inner) stream.push(event);
+          stream.end();
+        } catch (error) {
+          stream.push({
+            type: "error",
+            reason: "error",
+            error: {
+              role: "assistant",
+              content: [],
+              api: model.api,
+              provider: model.provider,
+              model: model.id,
+              usage: {
+                input: 0,
+                output: 0,
+                cacheRead: 0,
+                cacheWrite: 0,
+                totalTokens: 0,
+                cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+              },
+              stopReason: "error",
+              errorMessage: error instanceof Error ? error.message : String(error),
+              timestamp: Date.now(),
+            },
+          });
+          stream.end();
+        }
+      })();
+      return stream;
     };
   } else {
     providerConfig.headers = buildPhalaHeaders(config);
