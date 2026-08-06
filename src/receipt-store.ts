@@ -94,7 +94,10 @@ export class PhalaReceiptStore {
     const report = await fetchAttestation(apiKey, nonce, { baseUrl: config.baseUrl });
     if (!report) return null;
     try {
-      const binding = validateAciReportBinding(report, nonce, Math.floor(now / 1000));
+      // Verifier time is taken after the fetch: the gateway stamps fetched_at
+      // when it builds the report, so a timestamp captured before the request
+      // can land (or truncate) before it and fail the freshness check.
+      const binding = validateAciReportBinding(report, nonce, Math.floor(Date.now() / 1000));
       this._lastAttestationError = undefined;
       this.cachedAttestation = { report, binding, fetchedAt: now };
       return { report, binding };
@@ -194,4 +197,3 @@ function lowerHeaders(headers: Record<string, string>): Record<string, string> {
   }
   return out;
 }
-

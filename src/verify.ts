@@ -315,9 +315,7 @@ export function validateAciReportBinding(
   if (asString(endorsement.algo) !== asString(identityPk.algo)) {
     throw new ReportBindingError("keyset_endorsement algo mismatch");
   }
-  const endorsementPayload = canonicalize(
-    keysetEndorsementPayloadCanonical(computedKeysetDigest),
-  );
+  const endorsementPayload = canonicalize(keysetEndorsementPayloadCanonical(computedKeysetDigest));
   // keyset_endorsement: ecdsa-secp256k1 64-byte r||s over sha256(payload), or
   // ed25519 64-byte over payload. We only verify secp256k1 (the documented
   // phala gateway algo); ed25519 would need the ed25519 verify path.
@@ -331,10 +329,13 @@ export function validateAciReportBinding(
   const fetchedAt = asBigInt(freshness.fetched_at);
   const staleAfter = asBigInt(freshness.stale_after);
   const now = BigInt(nowSecs);
+  // Gateway clocks may run slightly ahead of the verifier; accept reports
+  // stamped a short while into the future. The stale side stays strict.
+  const FUTURE_SKEW_TOLERANCE_SECS = 120n;
   if (
     fetchedAt === undefined ||
     staleAfter === undefined ||
-    now < fetchedAt ||
+    fetchedAt - now > FUTURE_SKEW_TOLERANCE_SECS ||
     now >= staleAfter
   ) {
     throw new ReportBindingError("attestation report is not fresh at verifier time");
