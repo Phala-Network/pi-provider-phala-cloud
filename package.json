@@ -1,14 +1,11 @@
 {
   "name": "pi-provider-phala-cloud",
-  "version": "0.1.0",
-  "description": "Use Phala Cloud Confidential AI in Pi with per-response verifiability",
+  "version": "0.2.0",
+  "description": "Phala Cloud Confidential AI for Pi — attested TLS (SPKI) pinning + per-response receipt verification",
   "keywords": [
     "ai-provider",
     "attestation",
     "confidential-ai",
-    "confidential-computing",
-    "llm",
-    "llm-provider",
     "phala",
     "phala-cloud",
     "pi",
@@ -19,41 +16,26 @@
     "tee",
     "verifiable"
   ],
-  "bugs": {
-    "url": "https://github.com/Leechael/pi-provider-phala-cloud/issues"
-  },
   "license": "MIT",
-  "author": "Leechael",
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/Leechael/pi-provider-phala-cloud"
-  },
+  "type": "module",
+  "private": false,
   "files": [
     "index.ts",
-    "src",
+    "core",
+    "vendor",
     "package.json",
-    "README.md"
+    "README.md",
+    "LICENSE",
+    "SOURCE.json",
+    ".npmrc"
   ],
-  "type": "module",
   "scripts": {
-    "clean": "echo 'nothing to clean'",
-    "build": "echo 'nothing to build'",
-    "check": "tsc --noEmit",
-    "test": "node --test tests/*.test.ts",
-    "lint": "oxlint .",
-    "format": "oxfmt . --write",
-    "format:check": "oxfmt . --check",
-    "pre-commit": "prek run"
+    "start": "pi -e .",
+    "pretest": "node -e \"console.log('no unit tests in artifact; run SoT clients/pi-provider')\""
   },
-  "devDependencies": {
-    "@earendil-works/pi-ai": "^0.83.0",
-    "@earendil-works/pi-coding-agent": "^0.83.0",
-    "@earendil-works/pi-tui": "^0.83.0",
-    "@j178/prek": "^0.4.4",
-    "@types/node": "^24.0.0",
-    "oxfmt": "^0.44.0",
-    "oxlint": "^1.59.0",
-    "typescript": "^5.9.0"
+  "dependencies": {
+    "@phala/aci-verifier": "file:./vendor/aci-verifier",
+    "undici": "8.5.0"
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",
@@ -65,8 +47,18 @@
       "./index.ts"
     ]
   },
-  "dependencies": {
-    "@noble/hashes": "^2.2.0",
-    "@noble/secp256k1": "^3.1.0"
+  "engines": {
+    "node": ">=20"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Phala-Network/pi-provider-phala-cloud"
+  },
+  "sot": {
+    "monorepo": "https://github.com/Dstack-TEE/private-ai-gateway",
+    "kernel": "@phala/pi-provider-aci",
+    "verifier": "@phala/aci-verifier@0.1.0",
+    "brand": "phala-cloud",
+    "oauth": true
   }
 }

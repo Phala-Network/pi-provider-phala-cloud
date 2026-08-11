@@ -1,0 +1,26 @@
+{
+  "name": "@phala/aci-verifier",
+  "version": "0.1.0",
+  "description": "Vendored build of @phala/aci-verifier from private-ai-gateway (not published to npm).",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "sideEffects": false,
+  "dependencies": {
+    "@phala/dcap-qvl": "0.5.2"
+  }
+}

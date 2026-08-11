@@ -1,166 +1,101 @@
-# Pi extension for Phala Cloud Confidential AI
+# pi-provider-phala-cloud
 
-[![npm](https://img.shields.io/npm/v/pi-provider-phala-cloud)](https://www.npmjs.com/package/pi-provider-phala-cloud)
-[![license](https://img.shields.io/npm/l/pi-provider-phala-cloud)](./LICENSE)
+Phala Cloud Confidential AI for Pi — attested TLS (SPKI) pinning + per-response receipt verification
 
-**Use Phala Cloud Confidential AI in Pi, with per-response verifiability in the footer and optional end-to-end encryption on request fields.**
+This repository is a **release artifact** for [pi](https://pi.dev) (`pi-coding-agent`).
+It is generated from the single source of truth (SoT):
 
-Phala Cloud serves OpenAI-compatible models through an attested gateway at
-`https://inference.phala.com/v1`. Every response carries signed ACI headers
-(`x-receipt-id`, `x-aci-identity`, `x-aci-keyset-digest`) that let you fetch a
-receipt and verify it against the gateway's attestation report. This extension
-wires that into Pi: chat works like any OpenAI provider, request fields can be
-encrypted to the gateway's attested E2EE key, and the footer updates to
-`verified` / `routed` / `attested` / `mismatch` after each response.
+**https://github.com/Dstack-TEE/private-ai-gateway**
 
-## What this package adds
-
-- **OpenAI-compatible provider** registered as `phala-cloud`, with model
-  discovery from `/v1/models` (no hardcoded catalog).
-- **Thinking support.** Qwen3 models get `enable_thinking` via pi's built-in
-  openai-completions handler; streaming `reasoning_content` is surfaced as pi
-  thinking blocks. No custom stream handler needed.
-- **`is_tee` filtering.** Only confidentially-served models are registered by
-  default; toggle in `/phala-cloud-settings`.
-- **Footer verification.** After each response the footer shows whether the
-  receipt's `upstream.verified` event was `verified` (confidential upstream) or
-  `routed` (gateway attested but upstream not). A `verified*` suffix means the
-  receipt signature checks out but request/response hashes were not verified.
-  `mismatch` means the workload/keyset does not match the cached attestation.
-- **E2EE v2.** Request fields (`messages[].content`, legacy `prompt`,
-  embeddings `input`) are encrypted to the gateway's secp256k1 E2EE public key
-  before leaving the client. The gateway decrypts inside its TEE. E2EE is enabled
-  by default; disable it in `/phala-cloud-settings`.
-- **`/phala-cloud-settings`** to configure TEE-only filtering, thinking format,
-  auto-verification, and E2EE, with home and project config scope.
-- **`/attestation`** to inspect the current attestation report: workload id,
-  keyset digest, freshness window, E2EE keys, receipt signing keys, and
-  validation status.
+Do not treat this repo as the place to change protocol/kernel/verifier logic.
+See [Maintenance](#maintenance) below.
 
 ## Install
 
-From npm:
+### One-shot try (from a clone)
 
 ```bash
-pi install npm:pi-provider-phala-cloud
+git clone https://github.com/Phala-Network/pi-provider-phala-cloud
+cd pi-provider-phala-cloud
+npm install --omit=dev --legacy-peer-deps
+pi -e .
 ```
 
-Or load a local checkout:
+`npm install` is required once so that:
+
+- `file:./vendor/aci-verifier` is linked into `node_modules/@phala/aci-verifier`
+- runtime deps (`undici`, `@phala/dcap-qvl`) are fetched from npm
+
+pi loads the extension with jiti; bare imports resolve through this package's
+`node_modules`. Peer packages (`@earendil-works/pi-*`) are provided by pi itself.
+
+### Persistent install
 
 ```bash
-pi -e /path/to/pi-provider-phala-cloud
+pi install git:github.com/Phala-Network/pi-provider-phala-cloud
+# optional pin:
+# pi install git:github.com/Phala-Network/pi-provider-phala-cloud@<tag-or-sha>
 ```
 
-### Programmatic usage
+pi clones this repo and runs `npm install --omit=dev` automatically.
 
-```typescript
-import { main } from "@earendil-works/pi-coding-agent";
-import { PhalaCloud } from "pi-provider-phala-cloud";
-
-main(process.argv.slice(2), {
-  extensionFactories: [PhalaCloud()],
-});
-```
-
-## Sign in
-
-Run `/login phala-cloud` inside pi. This starts a device authorization flow:
-open the shown URL, approve the request in the Phala dashboard, and pi
-receives a Redpill LLM API key (stored in `~/.pi/agent/auth.json`). No Phala
-Cloud API token is created.
-
-Alternatively, create a key in the Phala dashboard under **Confidential AI
-API** and set `PHALA_LLM_API_KEY`. A stored `/login` credential takes
-precedence over the env var. This key is separate from the CVM-management
-credential (`PHALA_CLOUD_API_KEY` in the `@phala/cloud` SDK); the two are not
-interchangeable.
+## Use
 
 ```bash
-PHALA_LLM_API_KEY=... pi
+# API key (both brands)
+export PHALA_LLM_API_KEY=...
+# optional base URL override
+# export PHALA_BASE_URL=https://...
+
+pi -e .          # from this directory after npm install
+# then: /model phala/<model-id>
 ```
 
-## Model
+## Auth
 
-Select a model inside Pi:
+This brand supports **OAuth device login** via pi's `/login phala`
+(in addition to `PHALA_LLM_API_KEY`).
 
-```text
-/model phala-cloud/phala/qwen3.5-27b
+OAuth code lives in this repo's brand `index.ts` (maintained in SoT under
+`clients/pi-provider/packages/pi-provider-phala-cloud/`).
+
+## Layout
+
+```
+index.ts                 brand entry (provider id, defaults, optional OAuth)
+core/                    vendor-neutral ACI kernel (from SoT pi-provider-aci)
+vendor/aci-verifier/     built reference verifier (from SoT clients/verifier-ts)
+package.json             pi.extensions + file:./vendor/aci-verifier
+SOURCE.json              SoT commit / versions recorded at pack time
 ```
 
-Model ids come from the live `/v1/models` catalog. When discovery has no API
-key, a small fallback list is used.
+## Maintenance
 
-## Thinking
+| Path in this repo | Owned by | How to change |
+|---|---|---|
+| `core/**` | SoT `clients/pi-provider/packages/pi-provider-aci` | Edit SoT, re-pack, push artifact |
+| `vendor/aci-verifier/**` | SoT `clients/verifier-ts` (build output only) | Edit SoT verifier, re-pack, push |
+| `index.ts` (brand skin) | SoT `clients/pi-provider/packages/pi-provider-phala-cloud` | Edit SoT brand package, re-pack |
+| Brand-only experiments | optional local `brand/` (not generated today) | Fork / PR to SoT if it should ship |
 
-For Qwen3-family models, pi's thinking level maps to `enable_thinking`:
+Pack command in SoT:
 
-```text
-/thinking medium   # enable_thinking: true
-/thinking off      # enable_thinking: false
+```bash
+# from private-ai-gateway
+node clients/pi-provider/scripts/pack-brand.mjs \
+  --brand phala-cloud \
+  --out /path/to/pi-provider-phala-cloud
 ```
 
-Other model families default to no thinking parameter. Set the thinking format
-in `/phala-cloud-settings` if you need to force `qwen`, `openai`
-(`reasoning_effort`), or `off`.
+`@phala/aci-verifier` is **not** published to npm. Consumers only see the
+vendored build inside this artifact (or the other brand artifact).
 
-## Verification and footer
+## Version
 
-Each response includes ACI headers. The extension captures them and, after the
-stream finishes, fetches the receipt and classifies it:
-
-- **verified** — `upstream.verified.result === "verified"` and `required === true`
-  (confidential upstream, channel-bound), and the receipt signature and workload
-  match the cached attestation.
-- **verified\*** — receipt classified as verified but request/response hashes
-  were not checked (for example because the response body is not available to the
-  extension hook).
-- **routed** — `result === "failed"`, `required === false` (gateway attested,
-  upstream not).
-- **attested** — headers present, receipt fetch pending or unavailable.
-- **mismatch** — receipt workload/keyset does not match the cached attestation.
-- **(no receipt)** — no ACI headers on the response.
-
-Disable auto-fetch in `/phala-cloud-settings` if you do not want the extension
-to call `/v1/aci/receipts/{id}` after each response.
-
-## Attestation report
-
-Run `/attestation` to view the current attestation report:
-
-```text
-Phala Cloud attestation
-API version: aci/1
-Workload ID: sha256:...
-Keyset digest: sha256:...
-Report data: verified
-Keyset endorsement: verified
-Freshness: fetched_at=... stale_after=...
-E2EE keys (1): dstack-kms-e2ee-v1 (secp256k1)
-Receipt signing keys (1): default (ecdsa-secp256k1)
-Last receipt: ...
-```
-
-If validation fails, the command prints the failure reason, including
-diagnostics such as the computed and reported `workload_keyset_digest`.
-
-## Configure
-
-```text
-/phala-cloud-settings
-```
-
-Toggle TEE-only model registration, thinking format, auto-verification, and
-E2EE. Config is layered: project
-(`.pi/providers/phala-cloud/config.json`, gated by project trust) overrides home
-(`~/.pi/providers/phala-cloud/config.json`), which overrides defaults.
-Environment variables override both:
-
-- `PHALA_CLOUD_API_PREFIX` / `PHALA_BASE_URL` / `PHALA_CLOUD_BASE_URL` — gateway
-  base URL.
-- `PHALA_CLOUD_IS_TEE_ONLY` — `true` / `false`.
-- `PHALA_CLOUD_THINKING_FORMAT` — `auto`, `qwen`, `openai`, `off`.
-- `PHALA_CLOUD_AUTO_VERIFY` — `true` / `false`.
+Artifact version: `0.2.0`  
+Kernel / verifier versions are recorded in `SOURCE.json`.
 
 ## License
 
-MIT
+MIT (kernel + brand). Vendored verifier retains its upstream license notice
+(Apache-2.0); see SoT `clients/verifier-ts`.
