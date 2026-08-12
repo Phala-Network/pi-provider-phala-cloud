@@ -1,14 +1,14 @@
 {
-  "generatedAt": "2026-08-11T20:24:30.715Z",
+  "generatedAt": "2026-08-12T00:24:14.001Z",
   "brand": "phala-cloud",
   "packageName": "pi-provider-phala-cloud",
   "packageVersion": "0.2.0",
   "oauth": true,
   "sot": {
     "repository": "https://github.com/Dstack-TEE/private-ai-gateway",
-    "commit": "ba19111a0dd3e403f8ae9a2d0c1ef005eeef540b",
-    "commitShort": "ba19111",
-    "branch": "integrate-frantic-duck",
+    "commit": "38b17738b1e638a7aac58e7d5873dea86cc3fcf3",
+    "commitShort": "38b1773",
+    "branch": "feat/pi-provider-release-artifacts",
     "paths": {
       "kernel": "clients/pi-provider/packages/pi-provider-aci",
       "brand": "clients/pi-provider/packages/pi-provider-phala-cloud",
