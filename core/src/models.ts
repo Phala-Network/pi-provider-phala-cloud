@@ -223,8 +223,10 @@ function parsePerTokenPrice(value: unknown): number {
   if (typeof value !== "string" && typeof value !== "number") return 0;
   const parsed = Number(value);
   if (!Number.isFinite(parsed) || parsed < 0) return 0;
-  // Aci returns per-token pricing; pi expects per-million-token.
-  return parsed * 1_000_000;
+  // Aci returns per-token pricing; pi expects per-million-token. Round to
+  // nanodollars per million tokens to avoid binary float noise (0.2 ->
+  // 0.19999999999999998) leaking into cost display.
+  return Math.round(parsed * 1_000_000 * 1_000_000_000) / 1_000_000_000;
 }
 
 function mapInputModalities(raw: unknown): ("text" | "image")[] {
@@ -276,13 +278,18 @@ export function mapAciServerModel(
 
   const pricing =
     model.pricing && typeof model.pricing === "object"
-      ? (model.pricing as { prompt?: unknown; completion?: unknown })
+      ? (model.pricing as {
+          prompt?: unknown;
+          completion?: unknown;
+          input_cache_read?: unknown;
+          input_cache_write?: unknown;
+        })
       : {};
   const cost = {
     input: parsePerTokenPrice(pricing.prompt),
     output: parsePerTokenPrice(pricing.completion),
-    cacheRead: 0,
-    cacheWrite: 0,
+    cacheRead: parsePerTokenPrice(pricing.input_cache_read),
+    cacheWrite: parsePerTokenPrice(pricing.input_cache_write),
   };
   const name = typeof model.name === "string" && model.name ? model.name : model.id;
 
