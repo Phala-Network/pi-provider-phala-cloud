@@ -73,6 +73,13 @@
     "http-proxy-agent": "file:./stubs/empty",
     "https-proxy-agent": "file:./stubs/empty",
     "@google/genai": "file:./stubs/google-genai",
-    "@anthropic-ai/sdk": "file:./stubs/anthropic-sdk"
+    "@anthropic-ai/sdk": "file:./stubs/anthropic-sdk",
+    "quickjs-wasi": "file:./stubs/empty",
+    "chalk": "file:./stubs/empty",
+    "cross-spawn": "file:./stubs/empty",
+    "diff": "file:./stubs/empty",
+    "hosted-git-info": "file:./stubs/empty",
+    "ignore": "file:./stubs/empty",
+    "proper-lockfile": "file:./stubs/empty"
   }
 }
