@@ -64,6 +64,42 @@ This brand supports **OAuth device login** via pi's `/login phala`
 OAuth code lives in this repo's brand `index.ts` (maintained in SoT under
 `clients/pi-provider/packages/pi-provider-phala-cloud/`).
 
+## Config
+
+Layered config (`~/.pi/providers/phala/config.json`, project
+`.pi/providers/phala/config.json`, env, runtime) supports `baseUrl`,
+`models.isTeeOnly`, `models.thinkingFormat`, `models.allowlist`,
+`models.defaultModel`, `verify.failOpenOnUnpinned` and `pinning.enabled`.
+
+`models.overrides` patches per-model compatibility on top of the builtin
+quirk table in `core/src/models.ts` (keyed by catalog model id; merged
+key-by-key):
+
+```json
+{
+  "models": {
+    "overrides": {
+      "some/model-id": {
+        "supportsDeveloperRole": false,
+        "maxTokens": 8192,
+        "thinkingLevelMap": { "off": null, "minimal": "low", "xhigh": "high", "max": "high" }
+      }
+    }
+  }
+}
+```
+
+Builtins currently record: five qwen3.x upstreams reject the `developer`
+message role, and `openai/gpt-oss-120b` (Harmony) accepts only
+low/medium/high `reasoning_effort`. Both verified live against
+inference.phala.com (2026-11).
+
+Catalog entries are routed by `output_modalities`: chat models register as
+chat, `decisions` models (e.g. `jaredpalmer/kev-4b`) register as pi
+classifier models served via the System One protocol (`POST /v1/systemone`),
+and embeddings/transcription/image entries are excluded (no matching pi API
+behind this gateway).
+
 ## Layout
 
 ```

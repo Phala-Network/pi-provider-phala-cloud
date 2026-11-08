@@ -16,6 +16,9 @@ import { dirname, join } from "node:path";
 
 import { DEFAULT_BASE_URL, LOG_PREFIX, PROVIDER_ID, getBaseUrl } from "./constants.ts";
 import { profile } from "./profile.ts";
+import type { ModelCompatOverride } from "./models.ts";
+
+const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 
 export type AciConfigSource = "runtime" | "env" | "project" | "home" | "default";
 
@@ -28,6 +31,11 @@ export interface AciModelsConfig {
   thinkingFormat: ThinkingFormat;
   /** Optional model-id allowlist. When set, only these ids are registered. */
   allowlist?: string[];
+  /**
+   * Per-model compatibility patches over the builtin override table (known
+   * upstream quirks). Keyed by catalog model id.
+   */
+  overrides?: Record<string, ModelCompatOverride>;
 }
 
 export interface AciVerifyConfig {
@@ -58,6 +66,7 @@ export type AciCloudConfigPatch = {
     isTeeOnly: unknown;
     thinkingFormat: unknown;
     allowlist: unknown;
+    overrides: unknown;
   }>;
   verify?: Partial<{
     failOpenOnUnpinned: unknown;
@@ -72,6 +81,7 @@ export interface AciCloudConfigSources {
     isTeeOnly: AciConfigSource;
     thinkingFormat: AciConfigSource;
     allowlist: AciConfigSource;
+    overrides: AciConfigSource;
   };
   verify: {
     failOpenOnUnpinned: AciConfigSource;
@@ -299,6 +309,53 @@ function requireStringArray(
   });
 }
 
+/** Validate the models.overrides record; unknown model ids are allowed. */
+function validateModelOverrides(
+  raw: unknown,
+  configPath: string,
+): Record<string, ModelCompatOverride> | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  const record = requireRecord(raw, configPath, "/models/overrides");
+  const result: Record<string, ModelCompatOverride> = {};
+  for (const [modelId, patch] of Object.entries(record)) {
+    const pointer = `/models/overrides/${modelId}`;
+    const p = requireRecord(patch, configPath, pointer);
+    const override: ModelCompatOverride = {};
+    if (p.supportsDeveloperRole !== undefined) {
+      if (typeof p.supportsDeveloperRole !== "boolean") {
+        fail(configPath, `${pointer}/supportsDeveloperRole`, "expected a boolean");
+      }
+      override.supportsDeveloperRole = p.supportsDeveloperRole;
+    }
+    if (p.maxTokens !== undefined) {
+      if (typeof p.maxTokens !== "number" || !Number.isInteger(p.maxTokens) || p.maxTokens <= 0) {
+        fail(configPath, `${pointer}/maxTokens`, "expected a positive integer");
+      }
+      override.maxTokens = p.maxTokens;
+    }
+    if (p.thinkingLevelMap !== undefined) {
+      const map = requireRecord(p.thinkingLevelMap, configPath, `${pointer}/thinkingLevelMap`);
+      const levelMap: NonNullable<ModelCompatOverride["thinkingLevelMap"]> = {};
+      for (const [level, value] of Object.entries(map)) {
+        if (!(THINKING_LEVELS as readonly string[]).includes(level)) {
+          fail(
+            configPath,
+            `${pointer}/thinkingLevelMap/${level}`,
+            `unknown thinking level (expected one of: ${THINKING_LEVELS.join(", ")})`,
+          );
+        }
+        if (value !== null && typeof value !== "string") {
+          fail(configPath, `${pointer}/thinkingLevelMap/${level}`, "expected a string or null");
+        }
+        levelMap[level as keyof typeof levelMap] = value;
+      }
+      override.thinkingLevelMap = levelMap;
+    }
+    result[modelId] = override;
+  }
+  return result;
+}
+
 function validateModelsConfig(
   raw: unknown,
   configPath: string,
@@ -313,6 +370,7 @@ function validateModelsConfig(
       `${pointer}/thinkingFormat`,
     ),
     allowlist: requireStringArray(model.allowlist, configPath, `${pointer}/allowlist`),
+    overrides: validateModelOverrides(model.overrides, configPath),
   };
 }
 
@@ -384,6 +442,7 @@ function buildSources(
       isTeeOnly: sourceForPath(layers, ["models", "isTeeOnly"]),
       thinkingFormat: sourceForPath(layers, ["models", "thinkingFormat"]),
       allowlist: sourceForPath(layers, ["models", "allowlist"]),
+      overrides: sourceForPath(layers, ["models", "overrides"]),
     },
     verify: {
       failOpenOnUnpinned: sourceForPath(layers, ["verify", "failOpenOnUnpinned"]),
