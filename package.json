@@ -31,7 +31,8 @@
   ],
   "scripts": {
     "start": "pi -e .",
-    "pretest": "node -e \"console.log('no unit tests in artifact; run SoT clients/pi-provider')\""
+    "pretest": "node -e \"console.log('no unit tests in artifact; run SoT clients/pi-provider')\"",
+    "check": "tsc --noEmit"
   },
   "dependencies": {
     "@phala/aci-verifier": "0.11.0",
@@ -60,5 +61,10 @@
     "verifier": "@phala/aci-verifier@0.1.0",
     "brand": "phala-cloud",
     "oauth": true
+  },
+  "devDependencies": {
+    "@earendil-works/pi-ai": "^1.5.0",
+    "@earendil-works/pi-coding-agent": "^1.5.0",
+    "@earendil-works/pi-tui": "^1.5.0"
   }
 }

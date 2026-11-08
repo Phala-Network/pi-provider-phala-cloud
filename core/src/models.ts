@@ -173,7 +173,9 @@ export function mapAciServerModel(
 
   const thinking = resolveThinking(model.id, config);
 
-  const compat: NonNullable<ProviderModelConfig["compat"]> = {
+  // pi 1.5 splits ProviderModelConfig into a discriminated union; compat
+  // lives on the chat variant.
+  const compat: NonNullable<Extract<ProviderModelConfig, { reasoning: boolean }>["compat"]> = {
     thinkingFormat: thinking.format === "off" ? "openai" : thinking.format,
     maxTokensField: thinking.maxTokensField,
     supportsReasoningEffort: thinking.supportsReasoningEffort,
