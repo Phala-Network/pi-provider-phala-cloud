@@ -1,0 +1,8 @@
+{
+  "name": "@google/genai",
+  "version": "2.21.0-stub",
+  "private": true,
+  "description": "Type-only stub of @google/genai for `npm run check`. Exports every symbol pi-ai's d.ts references; implementations come from pi at runtime. If pi-ai upgrades its import list, tsc fails loudly here (TS2305) — update the exports.",
+  "main": "./index.js",
+  "types": "./index.d.ts"
+}

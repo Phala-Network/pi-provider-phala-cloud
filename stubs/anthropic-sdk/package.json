@@ -1,0 +1,8 @@
+{
+  "name": "@anthropic-ai/sdk",
+  "version": "0.129.0-stub",
+  "private": true,
+  "description": "Type-only stub of @anthropic-ai/sdk for `npm run check`. pi-ai's d.ts only needs the default export; implementations come from pi at runtime.",
+  "main": "./index.js",
+  "types": "./index.d.ts"
+}

@@ -1,0 +1,6 @@
+{
+  "name": "empty-stub",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Intentionally empty stub for typecheck-only dependency trimming. Never shipped: the pi-* packages are devDependencies used solely by `npm run check`; pi provides the real implementations at runtime."
+}
