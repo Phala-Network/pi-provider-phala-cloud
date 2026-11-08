@@ -2,7 +2,11 @@
 
 Date: 2026-11-08
 Branch: `feat/aci-verifier-runtime`
-Status: **validated — ready for integration, two product decisions needed**
+Status: **integrated** (decisions: quote verification ON — it is what makes the
+pin hardware-bound; serving enforcement OFF — `requireReceipt/requireVerified:
+false`, prevention-only, no receipt audit). Fail-closed gate verified at
+runtime: blocked-state rejects inference to the origin, `/v1/aci/*` bootstrap
+stays exempt, other hosts delegate untouched, `reset()` restores fetch.
 
 ## Why
 
