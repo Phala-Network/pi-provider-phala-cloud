@@ -35,7 +35,7 @@
   },
   "dependencies": {
     "@phala/aci-verifier": "file:./vendor/aci-verifier",
-    "undici": "8.5.0"
+    "undici": "8.12.4"
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",
@@ -48,7 +48,7 @@
     ]
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22.19.0"
   },
   "repository": {
     "type": "git",
