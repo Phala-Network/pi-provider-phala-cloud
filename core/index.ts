@@ -122,7 +122,7 @@ function modelsFromState(state: AciRuntimeState): ReturnType<typeof fallbackMode
   const mapped = state.rawModels
     .map((m) => mapAciServerModel(m, state.config))
     .filter((m): m is ReturnType<typeof fallbackModels>[number] => m !== null);
-  return mapped.length > 0 ? mapped : fallbackModels();
+  return mapped.length > 0 ? mapped : fallbackModels(state.config);
 }
 
 /**
@@ -439,7 +439,7 @@ export function createProvider(
     const apiKey = resolveApiKey();
     const discovered = apiKey
       ? await discoverAciModels(apiKey, config)
-      : { models: fallbackModels(), raw: [] };
+      : { models: fallbackModels(config), raw: [] };
 
     const state: AciRuntimeState = {
       cwd,
