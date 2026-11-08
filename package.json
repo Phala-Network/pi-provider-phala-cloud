@@ -34,7 +34,7 @@
     "pretest": "node -e \"console.log('no unit tests in artifact; run SoT clients/pi-provider')\""
   },
   "dependencies": {
-    "@phala/aci-verifier": "file:./vendor/aci-verifier",
+    "@phala/aci-verifier": "0.11.0",
     "undici": "8.12.4"
   },
   "peerDependencies": {
