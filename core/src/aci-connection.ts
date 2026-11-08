@@ -24,7 +24,12 @@ import {
   type AciFetch,
   connectAci,
 } from "@phala/aci-verifier/runtime";
-import { type AttestationReport, type ReportTranscript, verifyService } from "@phala/aci-verifier";
+import {
+  type AttestationReport,
+  type ReportTranscript,
+  type WorkloadKeyset,
+  verifyService,
+} from "@phala/aci-verifier";
 
 import type { AciCloudConfig } from "./config.ts";
 import {
@@ -73,7 +78,7 @@ function envProxy(): string | undefined {
 function authorizedFetch(apiKey: string): AciFetch {
   return (input, init) => {
     const original = new Request(input, init);
-    const headers = new Headers(new Map(original.headers));
+    const headers = new Headers(original.headers);
     if (!headers.has("authorization")) headers.set("authorization", `Bearer ${apiKey}`);
     if (!headers.has("accept")) headers.set("accept", "application/json");
     return fetch(new Request(original, { headers }));
@@ -92,7 +97,7 @@ export class AciConnectionManager {
   private fetchWrapped = false;
   private baseFetch?: typeof globalThis.fetch;
   private lastReceiptId?: string;
-  private lastError?: string;
+  private lastAttestationError?: string;
 
   /** TLS SPKI pin state for the configured base origin (footer source). */
   state: PinningState = { host: "", status: "disabled" };
@@ -110,7 +115,7 @@ export class AciConnectionManager {
 
   /** Human-readable reason the last establish() failed, if any. */
   get lastError(): string | undefined {
-    return this.lastError;
+    return this.lastAttestationError;
   }
 
   /** The verified connection, when pinning is active. */
@@ -148,10 +153,10 @@ export class AciConnectionManager {
       });
       this.origin = new URL(config.baseUrl).origin;
       this.installFetchWrapper();
-      this.lastError = undefined;
+      this.lastAttestationError = undefined;
       this.state = { host, status: "pinned" };
     } catch (error) {
-      this.lastError = error instanceof Error ? error.message : String(error);
+      this.lastAttestationError = error instanceof Error ? error.message : String(error);
       console.error(`${LOG_PREFIX} ACI connection failed:`, error);
       // Fail closed: no connection, but still wrap so inference to this
       // origin is blocked until pinning succeeds (or the user opts into

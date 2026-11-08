@@ -14,12 +14,9 @@
  *   src/constants.ts     — module-level consts + env-driven endpoints
  *   src/config.ts        — layered config (default/home/project/env/runtime)
  *   src/project-trust.ts — project-scope config trust gate
- *   src/canonical.ts     — JCS (RFC 8785 subset) for receipt/attestation digests
- *   src/crypto.ts        — ed25519 receipt signatures + hash helpers
- *   src/tls-pinning.ts   — attested TLS SPKI pinning via a narrow fetch wrapper
+ *   src/aci-connection.ts— verified ACI connection (@phala/aci-verifier):
+ *                          attestation bootstrap, pinned fail-closed fetch
  *   src/models.ts        — /v1/models discovery + thinkingFormat inference
- *   src/verify.ts        — receipt/attestation/session fetch + full verification
- *   src/receipt-store.ts — last-response receipt cache + footer status source
  *   src/settings-ui.ts   — SettingsList helpers for the settings command
  */
 
@@ -58,22 +55,14 @@ import {
   mapAciServerModel,
 } from "./src/models.ts";
 import { isAciProjectConfigApproved } from "./src/project-trust.ts";
-import { AciAttestationStore } from "./src/attestation-store.ts";
 import {
-  attestedSpkiSha256ForHost,
+  AciConnectionManager,
+  type PinningState,
   fetchReceipt,
   fetchSession,
   summarizeReceipt,
   summarizeSession,
-} from "./src/verify.ts";
-import type { WorkloadKeyset } from "./src/verify.ts";
-import {
-  clearPin,
-  installFetchPinning,
-  requirePinForHost,
-  setPin,
-  unrequirePinForHost,
-} from "./src/tls-pinning.ts";
+} from "./src/aci-connection.ts";
 import {
   type AciConfigScope,
   THINKING_FORMAT_VALUES,
@@ -85,29 +74,18 @@ import {
 } from "./src/settings-ui.ts";
 
 /** TLS SPKI pin state for the configured base host, shown in the footer. */
-interface PinningStatus {
-  host: string;
-  status: "pinned" | "unpinned" | "blocked" | "disabled";
-}
+type PinningStatus = PinningState;
 
 interface AciRuntimeState {
   cwd: string;
   config: AciCloudConfig;
   projectTrusted: boolean;
   rawModels: AciServerModel[];
-  store: AciAttestationStore;
+  /** Verified ACI connection + pinning gate (footer status source). */
+  connection: AciConnectionManager;
   /** TLS SPKI pin status for the configured base host (attested, per session). */
   pinning?: PinningStatus;
   overrides?: AciCloudConfigPatch;
-}
-
-/** Lowercase hostname of the configured base URL, or undefined when unparseable. */
-function hostOfBaseUrl(baseUrl: string): string | undefined {
-  try {
-    return new URL(baseUrl).hostname.toLowerCase();
-  } catch {
-    return undefined;
-  }
 }
 
 function resolveApiKey(): string {
@@ -148,72 +126,16 @@ function modelsFromState(state: AciRuntimeState): ReturnType<typeof fallbackMode
 }
 
 /**
- * Resolve the attested SPKI for the configured base host from a fresh,
- * validated attestation and install the TLS pin. Default posture is fail
- * CLOSED: with `pinning.enabled` (the default) an unpinnable session blocks
- * inference with a clear error rather than silently downgrading to CA-TLS.
- * Users can opt into the old fail-open behavior via
- * `verify.failOpenOnUnpinned` (runs unpinned with a footer warning).
+ * Establish the verified ACI connection for the configured base origin.
+ * Default posture is fail CLOSED: with `pinning.enabled` (the default) an
+ * unattestable session blocks inference with a clear error rather than
+ * silently downgrading to CA-TLS. Users can opt into the old fail-open
+ * behavior via `verify.failOpenOnUnpinned` (runs unpinned with a footer
+ * warning). The manager owns the details (quote-verified attestation,
+ * pinned fail-closed fetch, bootstrap exemptions).
  */
 async function installAttestedTlsPin(state: AciRuntimeState): Promise<void> {
-  const config = state.config;
-  const host = hostOfBaseUrl(config.baseUrl);
-  const normalized = host ?? "";
-
-  // Pinning disabled: no pin, no fail-closed gate (explicit user choice).
-  if (!config.pinning.enabled) {
-    if (host) {
-      clearPin(host);
-      unrequirePinForHost(host);
-    }
-    state.pinning = { host: normalized, status: "disabled" };
-    return;
-  }
-  if (!host) {
-    state.pinning = { host: config.baseUrl, status: "unpinned" };
-    return;
-  }
-
-  // Drop a stale pin from an earlier session for a different host; ensure this
-  // host is marked required so traffic fails closed until a pin is installed.
-  if (state.pinning?.host && state.pinning.host !== normalized) {
-    clearPin(state.pinning.host);
-    unrequirePinForHost(state.pinning.host);
-  }
-  requirePinForHost(host);
-
-  const apiKey = resolveApiKey();
-  if (!apiKey) {
-    clearPin(host);
-    state.pinning = { host, status: "unpinned" };
-    return;
-  }
-
-  const failOpen = config.verify.failOpenOnUnpinned === true;
-  const unpinned = (): void => {
-    clearPin(host);
-    state.pinning = { host, status: failOpen ? "unpinned" : "blocked" };
-  };
-
-  try {
-    const attested = await state.store.getAttestation(apiKey, config);
-    if (!attested) {
-      unpinned();
-      return;
-    }
-    const spki = attestedSpkiSha256ForHost(state.store.establishedKeyset, host);
-    if (!spki) {
-      unpinned();
-      return;
-    }
-    installFetchPinning();
-    setPin(host, spki);
-    requirePinForHost(host);
-    state.pinning = { host, status: "pinned" };
-  } catch (error) {
-    console.error(`${LOG_PREFIX} TLS pin install failed:`, error);
-    unpinned();
-  }
+  state.pinning = await state.connection.establish(state.config, resolveApiKey());
 }
 
 function registerAciProvider(pi: ExtensionAPI, state: AciRuntimeState): void {
@@ -439,7 +361,7 @@ async function runReceiptCommand(
     ctx.ui.notify(`${API_KEY_ENV} not set`, "error");
     return;
   }
-  const receiptId = args.trim() || state.store.receiptId;
+  const receiptId = args.trim() || state.connection.receiptId;
   if (!receiptId) {
     ctx.ui.notify("No receipt id given and no x-receipt-id seen yet; send a message first or pass an id", "error");
     return;
@@ -485,36 +407,17 @@ async function runAttestationCommand(
     ctx.ui.notify(`${API_KEY_ENV} not set`, "error");
     return;
   }
-  const attested = await state.store.getAttestation(apiKey, state.config);
-  if (!attested) {
-    const error = state.store.lastAttestationError ?? "unknown error";
-    ctx.ui.notify(`Attestation validation failed: ${error}`, "error");
-    return;
+  try {
+    const lines = await state.connection.describeAttestation(state.config, apiKey);
+    if (lines.length === 0) {
+      ctx.ui.notify(`${API_KEY_ENV} not set`, "error");
+      return;
+    }
+    ctx.ui.notify(lines.join("\n"), "info");
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    ctx.ui.notify(`Attestation validation failed: ${detail}`, "error");
   }
-  const report = attested.report;
-  const verification = attested.verification;
-  const keyset = report.attestation?.workload_keyset as WorkloadKeyset | undefined;
-  const e2eeKeys = Array.isArray(keyset?.e2ee_public_keys)
-    ? (keyset!.e2ee_public_keys as Array<{ key_id?: unknown; algo?: unknown; public_key?: unknown }>)
-    : [];
-  const receiptKeys = Array.isArray(keyset?.receipt_signing_keys)
-    ? (keyset!.receipt_signing_keys as Array<{ key_id?: unknown; algo?: unknown; public_key?: unknown }>)
-    : [];
-  const notAfter = keyset && typeof keyset.not_after === "number" ? keyset.not_after : undefined;
-  const keySummary = (keys: Array<{ key_id?: unknown; algo?: unknown }>) =>
-    keys.length === 0
-      ? "none"
-      : keys.map((k) => `${String(k.key_id)} (${String(k.algo)})`).join(", ");
-  const lines = [
-    `Aci Cloud attestation`,
-    `API version: ${String(report.api_version)}`,
-    `Keyset digest: ${verification.workloadKeysetDigest ?? "(unestablished)"}`,
-    `Report binding: ${verification.ok ? "verified" : "failed"}`,
-    `Keyset not_after: ${notAfter !== undefined ? new Date(notAfter * 1000).toISOString() : "unknown"}`,
-    `Encryption keys (${e2eeKeys.length}): ${keySummary(e2eeKeys)}`,
-    `Receipt signing keys (${receiptKeys.length}): ${keySummary(receiptKeys)}`,
-  ];
-  ctx.ui.notify(lines.join("\n"), "info");
 }
 
 /**
@@ -543,7 +446,7 @@ export function createProvider(
       config,
       projectTrusted: false,
       rawModels: discovered.raw,
-      store: new AciAttestationStore(),
+      connection: new AciConnectionManager(),
       overrides,
     };
     registerAciProvider(pi, state);
@@ -566,7 +469,7 @@ export function createProvider(
       const lower = Object.fromEntries(
         Object.entries(event.headers ?? {}).map(([k, v]) => [k.toLowerCase(), v]),
       );
-      state.store.recordReceiptId(
+      state.connection.recordReceiptId(
         lower[HEADER_RECEIPT_ID] ?? lower["x-receipt-id"],
       );
     });
@@ -612,17 +515,18 @@ export { PROVIDER_ID, PROVIDER_VERSION };
 export { profile as getProviderProfile } from "./src/profile.ts";
 export { loadAciCloudConfig } from "./src/config.ts";
 export { discoverAciModels, mapAciServerModel, inferThinkingFormat } from "./src/models.ts";
-// Attestation + pin-source helpers (prevention). Receipt verification is not
-// part of this plugin. Re-export what callers need.
+// Attestation/audit helpers for consumers. The prevention layer (verified
+// ACI connection + pinned fetch) lives in src/aci-connection.ts; receipt
+// verification is not part of this plugin.
+export {
+  fetchReceipt,
+  fetchSession,
+  summarizeReceipt,
+  summarizeSession,
+} from "./src/aci-connection.ts";
 export {
   type AttestationReport,
   type ReportVerification,
   type WorkloadKeyset,
-  attestedSpkiSha256ForHost,
-  bindAttestation,
-  fetchAttestation,
-  keysetStaleAfterMs,
-  newNonce,
-  receiptSigningKeys,
-} from "./src/verify.ts";
-export { verifyReportBinding } from "@phala/aci-verifier";
+  verifyReportBinding,
+} from "@phala/aci-verifier";
