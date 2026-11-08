@@ -26,10 +26,10 @@ npm install --omit=dev --legacy-peer-deps
 pi -e .
 ```
 
-`npm install` is required once so that:
-
-- `file:./vendor/aci-verifier` is linked into `node_modules/@phala/aci-verifier`
-- runtime deps (`undici`, `@phala/dcap-qvl`) are fetched from npm
+`npm install` is required once so that runtime deps (`@phala/aci-verifier`,
+which carries `@phala/dcap-qvl` and its pinned `undici`) are fetched from
+npm. The attestation/pinning kernel is the published, maintained
+`@phala/aci-verifier` package — it is no longer vendored into this repo.
 
 pi loads the extension with jiti; bare imports resolve through this package's
 `node_modules`. Peer packages (`@earendil-works/pi-*`) are provided by pi itself.
@@ -68,32 +68,26 @@ OAuth code lives in this repo's brand `index.ts` (maintained in SoT under
 
 ```
 index.ts                 brand entry (provider id, defaults, optional OAuth)
-core/                    vendor-neutral ACI kernel (from SoT pi-provider-aci)
-vendor/aci-verifier/     built reference verifier (from SoT clients/verifier-ts)
-package.json             pi.extensions + file:./vendor/aci-verifier
+core/                    vendor-neutral ACI kernel (attestation + pinned fetch)
+package.json             pi.extensions + @phala/aci-verifier npm dependency
 SOURCE.json              SoT commit / versions recorded at pack time
 ```
+
+> Upstream note: private-ai-gateway retired its pi-provider product line in
+> favor of `pap`; this repo survives as the maintained Pi extension by
+> consuming the still-maintained `@phala/aci-verifier` npm package directly
+> (previously vendored from SoT `clients/verifier-ts`).
 
 ## Maintenance
 
 | Path in this repo | Owned by | How to change |
 |---|---|---|
-| `core/**` | SoT `clients/pi-provider/packages/pi-provider-aci` | Edit SoT, re-pack, push artifact |
-| `vendor/aci-verifier/**` | SoT `clients/verifier-ts` (build output only) | Edit SoT verifier, re-pack, push |
-| `index.ts` (brand skin) | SoT `clients/pi-provider/packages/pi-provider-phala-cloud` | Edit SoT brand package, re-pack |
-| Brand-only experiments | optional local `brand/` (not generated today) | Fork / PR to SoT if it should ship |
+| `core/**` | this repo (was SoT `clients/pi-provider/packages/pi-provider-aci`, now retired there) | PR here |
+| `@phala/aci-verifier` | SoT `clients/verifier-ts`, published to npm | bump the npm dependency |
+| `index.ts` (brand skin) | this repo (was SoT brand package, now retired there) | PR here |
 
-Pack command in SoT:
-
-```bash
-# from private-ai-gateway
-node clients/pi-provider/scripts/pack-brand.mjs \
-  --brand phala-cloud \
-  --out /path/to/pi-provider-phala-cloud
-```
-
-`@phala/aci-verifier` is **not** published to npm. Consumers only see the
-vendored build inside this artifact (or the other brand artifact).
+`@phala/aci-verifier` **is** published to npm; this repo pins it like any
+other dependency (`npm run check` typechecks the kernel against pi ^1.5).
 
 ## Version
 

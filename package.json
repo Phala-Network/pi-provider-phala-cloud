@@ -22,7 +22,6 @@
   "files": [
     "index.ts",
     "core",
-    "vendor",
     "package.json",
     "README.md",
     "LICENSE",
@@ -31,11 +30,11 @@
   ],
   "scripts": {
     "start": "pi -e .",
-    "pretest": "node -e \"console.log('no unit tests in artifact; run SoT clients/pi-provider')\""
+    "pretest": "node -e \"console.log('no unit tests in artifact; run SoT clients/pi-provider')\"",
+    "check": "tsc --noEmit"
   },
   "dependencies": {
-    "@phala/aci-verifier": "file:./vendor/aci-verifier",
-    "undici": "8.12.4"
+    "@phala/aci-verifier": "0.11.0"
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",
@@ -57,8 +56,30 @@
   "sot": {
     "monorepo": "https://github.com/Dstack-TEE/private-ai-gateway",
     "kernel": "@phala/pi-provider-aci",
-    "verifier": "@phala/aci-verifier@0.1.0",
+    "verifier": "@phala/aci-verifier@0.11.0 (npm dependency)",
     "brand": "phala-cloud",
     "oauth": true
+  },
+  "devDependencies": {
+    "@earendil-works/pi-ai": "^1.5.0",
+    "@earendil-works/pi-coding-agent": "^1.5.0",
+    "@earendil-works/pi-tui": "^1.5.0",
+    "@types/node": "^24.19.2",
+    "typescript": "5.9"
+  },
+  "overrides": {
+    "@aws-sdk/client-bedrock-runtime": "file:./stubs/empty",
+    "@smithy/node-http-handler": "file:./stubs/empty",
+    "http-proxy-agent": "file:./stubs/empty",
+    "https-proxy-agent": "file:./stubs/empty",
+    "@google/genai": "file:./stubs/google-genai",
+    "@anthropic-ai/sdk": "file:./stubs/anthropic-sdk",
+    "quickjs-wasi": "file:./stubs/empty",
+    "chalk": "file:./stubs/empty",
+    "cross-spawn": "file:./stubs/empty",
+    "diff": "file:./stubs/empty",
+    "hosted-git-info": "file:./stubs/empty",
+    "ignore": "file:./stubs/empty",
+    "proper-lockfile": "file:./stubs/empty"
   }
 }
