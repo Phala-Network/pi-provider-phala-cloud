@@ -1,0 +1,79 @@
+# Trusted publishing (OIDC). No npm token.
+# https://docs.npmjs.com/trusted-publishers
+#
+# npmjs.com → pi-provider-phala-cloud → Settings → Trusted Publisher:
+#   Organization or user: Phala-Network
+#   Repository:           pi-provider-phala-cloud
+#   Workflow filename:    publish.yml
+#   Environment name:     (leave blank)
+#   Allowed actions:      npm publish
+#
+# Provenance is generated automatically for this public package from this
+# public repo. Do not set NODE_AUTH_TOKEN / NPM_TOKEN.
+
+name: Publish Package
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  id-token: write # Required for OIDC
+  contents: read
+
+concurrency:
+  group: npm-publish-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+          package-manager-cache: false # never cache release builds
+
+      - name: Check npm CLI supports trusted publishing
+        run: |
+          echo "node $(node --version)  npm $(npm --version)"
+          node -e 'const [a,b,c]=process.argv[1].split(".").map(Number); process.exit(a>11||(a===11&&(b>5||(b===5&&c>=1)))?0:1)' "$(npm --version)"
+
+      - name: Check tag matches package.json version
+        run: |
+          version=$(node -p "require('./package.json').version")
+          expected="v${version}"
+          if [ "${GITHUB_REF_NAME}" != "${expected}" ]; then
+            echo "::error::tag ${GITHUB_REF_NAME} does not match package.json ${version} (expected ${expected})"
+            exit 1
+          fi
+
+      - name: Check package.json repository matches this GitHub repo
+        run: |
+          pkg=$(node -p "require('./package.json').repository?.url || ''")
+          normalized=$(printf '%s' "$pkg" | sed -E 's#^git\+##; s#^ssh://git@#https://#; s#^git@github.com:#https://github.com/#; s#\.git$##')
+          expected="https://github.com/${GITHUB_REPOSITORY}"
+          if [ "$normalized" != "$expected" ]; then
+            echo "::error::package.json repository.url ($pkg) does not match ${expected}"
+            exit 1
+          fi
+
+      - run: npm ci
+      - run: npm run build --if-present
+      - run: npm run test --if-present
+
+      - name: Publish to npm
+        run: |
+          name=$(node -p "require('./package.json').name")
+          version=$(node -p "require('./package.json').version")
+          if npm view "$name@$version" version >/dev/null 2>&1; then
+            echo "$name@$version is already published; skipping"
+          else
+            npm publish
+          fi
