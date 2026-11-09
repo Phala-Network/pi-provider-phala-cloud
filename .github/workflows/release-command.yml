@@ -8,10 +8,15 @@ on:
   workflow_dispatch:
     inputs:
       release_type:
-        description: "Release type"
-        required: true
+        description: "Release type (ignored when version is set)"
+        required: false
         type: choice
         options: [patch, minor, major]
+        default: patch
+      version:
+        description: "Exact version (e.g. 0.8.0). Overrides release_type."
+        required: false
+        type: string
       ref:
         description: "Branch/ref to release from (default: main)"
         required: false
@@ -27,10 +32,11 @@ permissions:
 jobs:
   parse:
     if: github.event_name != 'workflow_dispatch'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       should_release: ${{ steps.parse.outputs.should_release }}
       release_type: ${{ steps.parse.outputs.release_type }}
+      version: ${{ steps.parse.outputs.version }}
       ref: ${{ steps.parse.outputs.ref }}
       issue_number: ${{ steps.parse.outputs.issue_number }}
       requested_by: ${{ steps.parse.outputs.requested_by }}
@@ -68,9 +74,9 @@ jobs:
               return;
             }
 
-            const match = body.match(/^!release\s+(patch|minor|major)\s*$/i);
+            const match = body.match(/^!release\s+(patch|minor|major|v?\d+\.\d+\.\d+(?:[-.][0-9A-Za-z.-]+)?)\s*$/i);
             if (!match) {
-              await safeComment(`@${actor} invalid command. Use: \`!release <patch|minor|major>\`.`);
+              await safeComment(`@${actor} invalid command. Use: \`!release <patch|minor|major|x.y.z>\`.`);
               return;
             }
 
@@ -102,11 +108,15 @@ jobs:
               return;
             }
 
-            const releaseType = match[1].toLowerCase();
+            const token = match[1];
+            const isBump = /^(patch|minor|major)$/i.test(token);
+            const releaseType = isBump ? token.toLowerCase() : '';
+            const version = isBump ? '' : token.replace(/^v/i, '');
+            const bumpLabel = version || releaseType;
             const startedBody = [
               '🔄 Release started',
               '',
-              `- Bump: \`${releaseType}\``,
+              `- Bump: \`${bumpLabel}\``,
               `- Source ref: \`${pr.head.ref}\``,
               `- Requested by: @${actor}`,
               `- Run: ${runUrl}`
@@ -115,6 +125,7 @@ jobs:
             const commentId = await safeComment(startedBody);
             core.setOutput('should_release', 'true');
             core.setOutput('release_type', releaseType);
+            core.setOutput('version', version);
             core.setOutput('ref', pr.head.ref);
             core.setOutput('issue_number', String(prNumber));
             core.setOutput('requested_by', actor);
@@ -129,12 +140,13 @@ jobs:
         github.event_name == 'workflow_dispatch' ||
         needs.parse.outputs.should_release == 'true'
       )
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     concurrency:
       group: release-${{ github.repository }}
       cancel-in-progress: false
     env:
       RELEASE_TYPE: ${{ github.event_name == 'workflow_dispatch' && inputs.release_type || needs.parse.outputs.release_type }}
+      RELEASE_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.version || needs.parse.outputs.version }}
       SOURCE_REF: ${{ github.event_name == 'workflow_dispatch' && inputs.ref || needs.parse.outputs.ref }}
       ISSUE_NUMBER: ${{ needs.parse.outputs.issue_number }}
       REQUESTED_BY: ${{ github.event_name == 'workflow_dispatch' && github.actor || needs.parse.outputs.requested_by }}
@@ -168,7 +180,11 @@ jobs:
         run: |
           source release-naming.env
           chmod +x ./scripts/next-version.sh
-          version=$(./scripts/next-version.sh "$RELEASE_TYPE")
+          if [ -n "${RELEASE_VERSION}" ]; then
+            version=$(./scripts/next-version.sh "$RELEASE_VERSION")
+          else
+            version=$(./scripts/next-version.sh "${RELEASE_TYPE:-patch}")
+          fi
           tag="${TAG_PREFIX}${version}"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
@@ -213,11 +229,12 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const bump = process.env.RELEASE_VERSION || process.env.RELEASE_TYPE;
             const body = [
               '✅ Release succeeded',
               '',
               `- Tag: \`${{ steps.version.outputs.tag }}\``,
-              `- Bump: \`${process.env.RELEASE_TYPE}\``,
+              `- Bump: \`${bump}\``,
               `- Source ref: \`${process.env.SOURCE_REF}\``,
               `- Requested by: @${process.env.REQUESTED_BY}`,
               `- Run: ${runUrl}`
@@ -237,10 +254,11 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const bump = process.env.RELEASE_VERSION || process.env.RELEASE_TYPE;
             const body = [
               '❌ Release failed',
               '',
-              `- Bump: \`${process.env.RELEASE_TYPE}\``,
+              `- Bump: \`${bump}\``,
               `- Source ref: \`${process.env.SOURCE_REF}\``,
               `- Requested by: @${process.env.REQUESTED_BY}`,
               `- Run: ${runUrl}`
