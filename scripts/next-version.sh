@@ -1,21 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Usage: ./scripts/next-version.sh <patch|minor|major>
+# Usage: ./scripts/next-version.sh <patch|minor|major|x.y.z>
 # Output: new version without prefix (e.g. 1.2.4)
 #
 # Base version is the highest of: latest git tag, package.json, npm registry.
-# This repo's package.json (0.2.0) is behind npm (0.7.x); git tags may be absent.
 
-BUMP="${1:-patch}"
-
-case "$BUMP" in
-  patch|minor|major) ;;
-  *)
-    echo "invalid bump: $BUMP" >&2
-    exit 1
-    ;;
-esac
+ARG="${1:-patch}"
+ARG="${ARG#v}"
 
 env_file="release-naming.env"
 if [[ ! -f "$env_file" ]]; then
@@ -54,12 +46,39 @@ else
   base_version=$(printf '%s\n' "${versions[@]}" | sed 's/-.*//' | sort -V | tail -n1)
 fi
 
+if [[ "$ARG" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+  requested="${ARG}"
+  if [[ -n "${PKG_NAME:-}" ]] && npm view "$PKG_NAME@$requested" version >/dev/null 2>&1; then
+    echo "version $requested is already published on npm" >&2
+    exit 1
+  fi
+  if git rev-parse -q --verify "refs/tags/${TAG_PREFIX}${requested}" >/dev/null 2>&1; then
+    echo "tag ${TAG_PREFIX}${requested} already exists" >&2
+    exit 1
+  fi
+  highest=$(printf '%s\n' "$base_version" "$requested" | sort -V | tail -n1)
+  if [[ "$requested" == "$base_version" || "$highest" != "$requested" ]]; then
+    echo "version $requested is not greater than current $base_version" >&2
+    exit 1
+  fi
+  echo "$requested"
+  exit 0
+fi
+
+case "$ARG" in
+  patch|minor|major) ;;
+  *)
+    echo "invalid bump or version: $ARG (use patch|minor|major or x.y.z)" >&2
+    exit 1
+    ;;
+esac
+
 IFS='.' read -r major minor patch_v <<< "$base_version"
 major=${major:-0}
 minor=${minor:-0}
 patch_v=${patch_v:-0}
 
-case "$BUMP" in
+case "$ARG" in
   patch)
     patch_v=$((patch_v + 1))
     ;;
