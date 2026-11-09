@@ -17,6 +17,12 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Dry run (do not actually publish)
+        type: boolean
+        default: true
 
 permissions:
   id-token: write # Required for OIDC
@@ -46,6 +52,7 @@ jobs:
           node -e 'const [a,b,c]=process.argv[1].split(".").map(Number); process.exit(a>11||(a===11&&(b>5||(b===5&&c>=1)))?0:1)' "$(npm --version)"
 
       - name: Check tag matches package.json version
+        if: github.event_name == 'push'
         run: |
           version=$(node -p "require('./package.json').version")
           expected="v${version}"
@@ -69,11 +76,19 @@ jobs:
       - run: npm run test --if-present
 
       - name: Publish to npm
+        env:
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || false }}
         run: |
+          if [ "$DRY_RUN" != "true" ] && [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "::error::manual publish is only allowed from main"
+            exit 1
+          fi
           name=$(node -p "require('./package.json').name")
           version=$(node -p "require('./package.json').version")
-          if npm view "$name@$version" version >/dev/null 2>&1; then
+          if [ "$DRY_RUN" != "true" ] && npm view "$name@$version" version >/dev/null 2>&1; then
             echo "$name@$version is already published; skipping"
+          elif [ "$DRY_RUN" = "true" ]; then
+            npm publish --dry-run
           else
             npm publish
           fi
