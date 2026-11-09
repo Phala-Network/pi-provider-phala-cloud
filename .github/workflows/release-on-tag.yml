@@ -1,0 +1,106 @@
+# Trusted publishing (OIDC). No npm token.
+# https://docs.npmjs.com/trusted-publishers
+#
+# npmjs.com → pi-provider-phala-cloud → Settings → Trusted Publisher:
+#   Organization or user: Phala-Network
+#   Repository:           pi-provider-phala-cloud
+#   Workflow filename:    release-on-tag.yml
+#   Environment name:     (leave blank)
+#   Allowed actions:      npm publish
+#
+# Manual trigger: Actions → Publish to npm → Run workflow, input tag (e.g. v0.8.0).
+# Tag push also publishes. GITHUB_TOKEN tag pushes do not, so release-command.yml
+# dispatches this workflow after it creates the tag.
+
+name: Publish to npm
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to release (e.g. v1.2.3)"
+        required: true
+        type: string
+
+permissions:
+  id-token: write
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+          package-manager-cache: false
+
+      - name: Upgrade npm for OIDC support
+        run: |
+          npm install -g npm@latest
+          echo "npm version: $(npm --version)"
+
+      - name: Verify OIDC token availability
+        run: |
+          if [ -n "${ACTIONS_ID_TOKEN_REQUEST_URL}" ] && [ -n "${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" ]; then
+            echo "OIDC token available"
+          else
+            echo "OIDC token NOT available"
+            echo "Check workflow permissions include 'id-token: write'"
+            exit 1
+          fi
+
+      - name: Verify version matches tag
+        run: |
+          source release-naming.env
+          tag_version="${RELEASE_TAG#${TAG_PREFIX}}"
+          pkg_version=$(node -e "console.log(require('./package.json').version)")
+          echo "Tag version:     $tag_version"
+          echo "Package version: $pkg_version"
+          if [ "$tag_version" != "$pkg_version" ]; then
+            echo "Version mismatch! Tag says $tag_version but package.json says $pkg_version"
+            exit 1
+          fi
+
+      - name: Publish to npm
+        run: |
+          NPM_TAG="latest"
+          echo "Publishing with tag: $NPM_TAG"
+          npm publish --access public --tag "$NPM_TAG" --provenance
+
+      - name: Create release tarball
+        run: |
+          source release-naming.env
+          npm pack
+          mkdir -p extract-tmp && tar -xzf "${PKG_NAME}-"*.tgz -C extract-tmp
+          mv extract-tmp/package "$PKG_NAME"
+          tar -czf "${PKG_NAME}.tar.gz" "$PKG_NAME"
+          rm -rf extract-tmp "$PKG_NAME" "${PKG_NAME}-"*.tgz
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          generate_release_notes: true
+          files: pi-provider-phala-cloud.tar.gz
+
+      - name: Publish summary
+        if: success()
+        run: |
+          PKG_NAME=$(node -e "console.log(require('./package.json').name)")
+          PKG_VERSION=$(node -e "console.log(require('./package.json').version)")
+          echo "Published: $PKG_NAME@$PKG_VERSION"
+          echo "https://www.npmjs.com/package/$PKG_NAME"
