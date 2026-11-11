@@ -71,3 +71,30 @@ export function verifySummary(config: AciCloudConfig): string {
   return `Pin: ${config.pinning.enabled ? "required" : "disabled"}, ` +
     `fail-open-unpinned ${formatBoolean(config.verify.failOpenOnUnpinned)}`;
 }
+
+/** Live auth + catalog snapshot shown in the settings summary line. */
+export interface CatalogStatus {
+  /** A usable API key resolves right now. */
+  authenticated: boolean;
+  /** Human-readable credential source ("none" when unauthenticated). */
+  authSource: string;
+  /** Registered chat models. */
+  chatCount: number;
+  /** Registered classifier (decision) models. */
+  classifierCount: number;
+  /** True when the profile fallback catalog is shown instead of the live one. */
+  fallback: boolean;
+}
+
+export function catalogSummary(status: CatalogStatus): string {
+  const plural = (n: number) => `model${n === 1 ? "" : "s"}`;
+  const catalog = status.fallback
+    ? `fallback (${status.chatCount} ${plural(status.chatCount)})`
+    : `${status.chatCount} chat ${plural(status.chatCount)}`;
+  const decisions =
+    status.classifierCount > 0
+      ? `${status.classifierCount} decision ${plural(status.classifierCount)}`
+      : "no decision models";
+  const auth = status.authenticated ? `auth: ${status.authSource}` : `auth: none (${status.authSource})`;
+  return `Catalog: ${catalog}, ${decisions} | ${auth}`;
+}

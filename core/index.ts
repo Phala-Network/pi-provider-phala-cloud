@@ -65,10 +65,12 @@ import {
   type AciConfigScope,
   THINKING_FORMAT_VALUES,
   buildSettingsTheme,
+  catalogSummary,
   formatScopeDescription,
   modelRegistrationSummary,
   settingsTitle,
   verifySummary,
+  type CatalogStatus,
 } from "./src/settings-ui.ts";
 
 interface AciRuntimeState {
@@ -131,6 +133,59 @@ async function installAttestedTlsPin(state: AciRuntimeState): Promise<void> {
   await state.connection.establish(state.config, resolveApiKey());
 }
 
+/** Where the active API key comes from and whether it is usable. */
+function resolveAuthStatus(): { ok: boolean; source: string } {
+  try {
+    const stored = readStoredCredential(PROVIDER_ID);
+    if (stored?.type === "oauth" && typeof stored.access === "string" && stored.access) {
+      const expires = stored.expires;
+      if (typeof expires === "number" && Number.isFinite(expires) && expires <= Date.now()) {
+        return { ok: false, source: "stored OAuth (expired)" };
+      }
+      return { ok: true, source: stored.username ? `OAuth: ${stored.username}` : "stored OAuth" };
+    }
+    if (stored?.type === "api_key" && typeof stored.key === "string" && stored.key) {
+      return { ok: true, source: "stored API key" };
+    }
+  } catch {
+    // auth.json unreadable; fall through to env.
+  }
+  if (process.env[API_KEY_ENV]?.trim()) return { ok: true, source: `${API_KEY_ENV} env` };
+  return { ok: false, source: "none" };
+}
+
+/** Live snapshot of auth + catalog state for the settings summary. */
+function buildCatalogStatus(state: AciRuntimeState): CatalogStatus {
+  const models = modelsFromState(state);
+  const chatCount = models.filter((m) => (m.type ?? "chat") === "chat").length;
+  const classifierCount = models.filter((m) => m.type === "classifier").length;
+  const auth = resolveAuthStatus();
+  return {
+    authenticated: auth.ok,
+    authSource: auth.source,
+    chatCount,
+    classifierCount,
+    fallback: state.rawModels.length === 0,
+  };
+}
+
+/**
+ * Re-pull the /v1/models catalog and re-register the provider. The discovery
+ * at extension load is a one-time snapshot: credentials may appear later
+ * (e.g. /login after startup), the first fetch may have failed, and the
+ * gateway catalog may change. Refresh on every session start and whenever
+ * the settings page opens. A failed refresh keeps the current snapshot (or
+ * the fallback catalog).
+ */
+async function refreshDiscoveredModels(pi: ExtensionAPI, state: AciRuntimeState): Promise<void> {
+  const apiKey = resolveApiKey();
+  if (!apiKey) return;
+  const discovered = await discoverAciModels(apiKey, state.config);
+  if (discovered.raw.length === 0) return;
+  state.rawModels = discovered.raw;
+  registerAciProvider(pi, state);
+}
+
 function registerAciProvider(pi: ExtensionAPI, state: AciRuntimeState): void {
   const config = state.config;
   const oauth = profile().oauth;
@@ -186,6 +241,12 @@ async function openSettingsMenu(
   await ctx.ui.custom<void>((tui, theme, _keybindings, done) => {
     const settingsTheme = buildSettingsTheme(theme);
     let list: SettingsList;
+
+    // Opening the settings page refreshes the catalog snapshot; re-render
+    // when the new list lands so the summary shows current counts.
+    void refreshDiscoveredModels(pi, state)
+      .then(() => tui.requestRender())
+      .catch(() => {});
 
     const refreshValues = () => {
       list.updateValue("scope", scope);
@@ -296,6 +357,7 @@ async function openSettingsMenu(
           truncateToWidth(theme.fg("accent", theme.bold(settingsTitle())), width),
           "",
           truncateToWidth(modelRegistrationSummary(drafts[scope]), width),
+          truncateToWidth(catalogSummary(buildCatalogStatus(state)), width),
           truncateToWidth(verifySummary(drafts[scope]), width),
           "",
           ...list.render(width),
@@ -423,6 +485,11 @@ export function createProvider(
       // session (fail-closed; inference is blocked if it cannot be done,
       // unless the user opted into failOpenOnUnpinned).
       await installAttestedTlsPin(state);
+      // Refresh the catalog snapshot: credentials may have appeared since
+      // the extension loaded (e.g. /login in a previous session), the first
+      // fetch may have failed, and the gateway catalog may have changed.
+      // Fire-and-forget so session start is not blocked on the network.
+      void refreshDiscoveredModels(pi, state).catch(() => {});
     });
 
     // Cheap header capture ONLY: remember the latest x-receipt-id so the
