@@ -4,7 +4,7 @@
 // shells (redpill, phala-cloud, ...) get their own provider id, env names,
 // default endpoint, and footer key without touching the protocol code.
 
-import { DEFAULT_PROFILE, profile, type ProviderProfile } from "./profile.ts";
+import { DEFAULT_PROFILE, profile, resolveProfile, type ProviderProfile } from "./profile.ts";
 
 // --- Identity (live bindings; see applyProviderProfile) ---
 export let PROVIDER_ID = DEFAULT_PROFILE.providerId;
@@ -15,9 +15,12 @@ export let LOG_PREFIX = DEFAULT_PROFILE.logPrefix;
 
 export const PROVIDER_VERSION = "0.2.0";
 
-/** Apply a resolved brand profile. Idempotent; call once before registering. */
+/** Apply a resolved brand profile. Idempotent; call once before registering.
+ *  Updates both the live identity bindings (above) and the profile store
+ *  (`profile()`), so profile-driven consumers (oauth block, label, env
+ *  prefix, fallback catalog, default base URL) see the brand values. */
 export function applyProviderProfile(patch: Partial<ProviderProfile> | undefined): void {
-  const merged = { ...DEFAULT_PROFILE, ...patch };
+  const merged = resolveProfile(patch);
   PROVIDER_ID = merged.providerId;
   FOOTER_STATUS_KEY = merged.footerKey;
   API_KEY_ENV = merged.apiKeyEnv;
