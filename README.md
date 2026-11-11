@@ -56,6 +56,11 @@ pi -e .          # from this directory after npm install
 # then: /model phala/<model-id>
 ```
 
+The model catalog is fetched from the gateway at load and re-fetched on
+every session start; opening `/phala-settings` also refreshes it. The
+settings page shows the credential state, the registered chat/decision
+model counts, and whether the live catalog or the fallback is in use.
+
 ## Auth
 
 This brand supports **OAuth device login** via pi's `/login phala`
