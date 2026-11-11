@@ -40,7 +40,6 @@ import {
 } from "./src/config.ts";
 import {
   API_KEY_ENV,
-  FOOTER_STATUS_KEY,
   HEADER_RECEIPT_ID,
   LOG_PREFIX,
   PROVIDER_ID,
@@ -57,7 +56,6 @@ import {
 import { isAciProjectConfigApproved } from "./src/project-trust.ts";
 import {
   AciConnectionManager,
-  type PinningState,
   fetchReceipt,
   fetchSession,
   summarizeReceipt,
@@ -73,18 +71,13 @@ import {
   verifySummary,
 } from "./src/settings-ui.ts";
 
-/** TLS SPKI pin state for the configured base host, shown in the footer. */
-type PinningStatus = PinningState;
-
 interface AciRuntimeState {
   cwd: string;
   config: AciCloudConfig;
   projectTrusted: boolean;
   rawModels: AciServerModel[];
-  /** Verified ACI connection + pinning gate (footer status source). */
+  /** Verified ACI connection + pinning gate (fail-closed inference). */
   connection: AciConnectionManager;
-  /** TLS SPKI pin status for the configured base host (attested, per session). */
-  pinning?: PinningStatus;
   overrides?: AciCloudConfigPatch;
 }
 
@@ -130,12 +123,12 @@ function modelsFromState(state: AciRuntimeState): ReturnType<typeof fallbackMode
  * Default posture is fail CLOSED: with `pinning.enabled` (the default) an
  * unattestable session blocks inference with a clear error rather than
  * silently downgrading to CA-TLS. Users can opt into the old fail-open
- * behavior via `verify.failOpenOnUnpinned` (runs unpinned with a footer
+ * behavior via `verify.failOpenOnUnpinned` (runs unpinned with a console
  * warning). The manager owns the details (quote-verified attestation,
  * pinned fail-closed fetch, bootstrap exemptions).
  */
 async function installAttestedTlsPin(state: AciRuntimeState): Promise<void> {
-  state.pinning = await state.connection.establish(state.config, resolveApiKey());
+  await state.connection.establish(state.config, resolveApiKey());
 }
 
 function registerAciProvider(pi: ExtensionAPI, state: AciRuntimeState): void {
@@ -163,7 +156,6 @@ function reloadEffectiveConfig(
   state.cwd = cwd;
   state.config = config;
   state.projectTrusted = projectTrusted;
-  state.pinning = undefined;
   return config;
 }
 
@@ -175,33 +167,6 @@ function applyEffectiveConfig(
 ): void {
   reloadEffectiveConfig(state, cwd, projectTrusted);
   registerAciProvider(pi, state);
-}
-
-function updateFooter(
-  ctx: { ui: { setStatus: (key: string, text: string | undefined) => void } },
-  state: AciRuntimeState,
-): void {
-  try {
-    ctx.ui.setStatus(FOOTER_STATUS_KEY, pinSuffix(state));
-  } catch {
-    // The session may have been replaced/reloaded between an async update and
-    // this render; the captured ctx is stale. Nothing to render to.
-  }
-}
-
-/** Short footer suffix describing the TLS pin state. */
-function pinSuffix(state: AciRuntimeState): string {
-  if (!state.config.pinning.enabled) return "";
-  switch (state.pinning?.status) {
-    case "pinned":
-      return " | tls-pinned";
-    case "unpinned":
-      return " | UNPINNED";
-    case "blocked":
-      return " | PIN REQUIRED";
-    default:
-      return " | pin: pending";
-  }
 }
 
 async function openSettingsMenu(
@@ -306,7 +271,7 @@ async function openSettingsMenu(
       {
         id: "failOpenOnUnpinned",
         label: "Fail open when unpinned",
-        description: "Off (default): block inference until an attested TLS pin is established. On: run unpinned with a footer warning when the attestation is unreachable.",
+        description: "Off (default): block inference until an attested TLS pin is established. On: run unpinned with a console warning when the attestation is unreachable.",
         currentValue: drafts[scope].verify.failOpenOnUnpinned ? "true" : "false",
         values: ["true", "false"],
       },
@@ -455,10 +420,9 @@ export function createProvider(
       const projectTrusted = isAciProjectConfigApproved(ctx);
       applyEffectiveConfig(pi, state, ctx.cwd, projectTrusted);
       // Resolve the attested SPKI from a fresh report and pin TLS for this
-      // session (fail-closed; footer shows "PIN REQUIRED" if it cannot be
-      // done, unless the user opted into failOpenOnUnpinned).
+      // session (fail-closed; inference is blocked if it cannot be done,
+      // unless the user opted into failOpenOnUnpinned).
       await installAttestedTlsPin(state);
-      updateFooter(ctx, state);
     });
 
     // Cheap header capture ONLY: remember the latest x-receipt-id so the
