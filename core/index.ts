@@ -26,6 +26,7 @@ import {
   type ExtensionFactory,
   readStoredCredential,
 } from "@earendil-works/pi-coding-agent";
+import { typesafeSystemOneApi } from "@earendil-works/pi-ai/api/typesafe-system-one.lazy";
 import { type SettingItem, SettingsList, truncateToWidth } from "@earendil-works/pi-tui";
 import os from "node:os";
 
@@ -195,6 +196,11 @@ function registerAciProvider(pi: ExtensionAPI, state: AciRuntimeState): void {
     api: "openai-completions",
     authHeader: true,
     models: modelsFromState(state),
+    // Decision (classifier) catalog entries are served via the System One
+    // protocol at POST {baseUrl}/systemone; wire pi-ai's built-in client so
+    // models.classify() routes to it. Without this the models register but
+    // every classify call fails with "no classifier implementation".
+    classifiers: { "typesafe-system-one": typesafeSystemOneApi() },
     ...(oauth ? { oauth } : {}),
   });
 }
