@@ -152,6 +152,14 @@ export default createProvider({
   footerKey: "phala",
   logPrefix: "[phala]",
   baseUrlAliases: ["PHALA_CLOUD_API_PREFIX", "PHALA_BASE_URL", "PHALA_CLOUD_BASE_URL"],
+  // Usage/balance display in /phala-settings. The console management API
+  // does NOT accept the inference (sk-*) key; users create a workspace API
+  // token at cloud.phala.com → Settings → API Keys and expose it via
+  // PHALA_CLOUD_API_KEY (env) or `billing.apiKey` in the config file.
+  billing: {
+    apiKeyEnv: "PHALA_CLOUD_API_KEY",
+    consoleUrl: "https://cloud.phala.com",
+  },
   fallbackModels: [
     {
       id: "phala/qwen3.5-27b",

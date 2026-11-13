@@ -51,11 +51,21 @@ export interface AciTlsPinningConfig {
   enabled: boolean;
 }
 
+export interface AciBillingConfig {
+  /** Cloud-console API token (sent as X-API-Key). Distinct from the
+   *  inference key: created in the console under Settings → API Keys.
+   *  Resolvable from the profile's billing env var or the config file. */
+  apiKey?: string;
+}
+
 export interface AciCloudConfig {
   baseUrl: string;
   models: AciModelsConfig;
   verify: AciVerifyConfig;
   pinning: AciTlsPinningConfig;
+  /** Optional cloud-console billing (usage/balance display). Only
+   *  meaningful when the active profile declares a billing block. */
+  billing?: AciBillingConfig;
   /** Default model id to surface first in /model. */
   defaultModel?: string;
 }
@@ -72,6 +82,7 @@ export type AciCloudConfigPatch = {
     failOpenOnUnpinned: unknown;
   }>;
   pinning?: Partial<{ enabled: unknown }>;
+  billing?: Partial<{ apiKey: unknown }>;
   defaultModel?: unknown;
 };
 
@@ -87,6 +98,7 @@ export interface AciCloudConfigSources {
     failOpenOnUnpinned: AciConfigSource;
   };
   pinning: { enabled: AciConfigSource };
+  billing: { apiKey: AciConfigSource };
   defaultModel: AciConfigSource;
 }
 
@@ -238,6 +250,11 @@ function envConfigPatch(env: NodeJS.ProcessEnv): AciCloudConfigPatch {
 
   const tlsPinning = parseBoolean(read(`${prefix}_TLS_PINNING`) ?? undefined);
   if (tlsPinning !== undefined) patch.pinning = { enabled: tlsPinning };
+
+  // Console billing token: the env var name comes from the profile's billing
+  // block (e.g. PHALA_CLOUD_API_KEY), not the generic {PREFIX}_* scheme.
+  const billingApiKey = p.billing ? read(p.billing.apiKeyEnv) : undefined;
+  if (billingApiKey) patch.billing = { apiKey: billingApiKey };
 
   return patch;
 }
@@ -400,6 +417,16 @@ function validatePinningConfig(
   };
 }
 
+function validateBillingConfig(
+  raw: unknown,
+  configPath: string,
+  pointer: string,
+): AciBillingConfig | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  const billing = requireRecord(raw, configPath, pointer);
+  return { apiKey: requireOptionalString(billing.apiKey, configPath, `${pointer}/apiKey`) };
+}
+
 export function validateAciCloudConfig(
   raw: unknown,
   configPath = "<aci-config>",
@@ -410,6 +437,7 @@ export function validateAciCloudConfig(
     models: validateModelsConfig(config.models, configPath, "/models"),
     verify: validateVerifyConfig(config.verify, configPath, "/verify"),
     pinning: validatePinningConfig(config.pinning, configPath, "/pinning"),
+    billing: validateBillingConfig(config.billing, configPath, "/billing"),
     defaultModel: requireOptionalString(config.defaultModel, configPath, "/defaultModel"),
   };
 }
@@ -448,6 +476,7 @@ function buildSources(
       failOpenOnUnpinned: sourceForPath(layers, ["verify", "failOpenOnUnpinned"]),
     },
     pinning: { enabled: sourceForPath(layers, ["pinning", "enabled"]) },
+    billing: { apiKey: sourceForPath(layers, ["billing", "apiKey"]) },
     defaultModel: sourceForPath(layers, ["defaultModel"]),
   };
 }

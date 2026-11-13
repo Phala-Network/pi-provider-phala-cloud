@@ -54,6 +54,11 @@ import {
   fallbackModels,
   mapAciServerModel,
 } from "./src/models.ts";
+import {
+  billingDashboardUrl,
+  fetchBillingSnapshot,
+} from "./src/billing.ts";
+import { openExternalUrl } from "./src/open-url.ts";
 import { isAciProjectConfigApproved } from "./src/project-trust.ts";
 import {
   AciConnectionManager,
@@ -64,7 +69,9 @@ import {
 } from "./src/aci-connection.ts";
 import {
   type AciConfigScope,
+  type BillingLineStatus,
   THINKING_FORMAT_VALUES,
+  billingSummary,
   buildSettingsTheme,
   catalogSummary,
   formatScopeDescription,
@@ -244,6 +251,19 @@ async function openSettingsMenu(
   let scope: AciConfigScope = projectTrusted ? "project" : "home";
   let dirty = false;
 
+  // Billing/usage display (profile-gated): the console API token comes from
+  // the effective config (billing.apiKey) or the profile's billing env var.
+  const billingProfile = profile().billing;
+  let billingSlug: string | undefined;
+  let billingStatus: BillingLineStatus | undefined = billingProfile
+    ? {
+        tokenPresent: Boolean(state.config.billing?.apiKey),
+        apiKeyEnv: billingProfile.apiKeyEnv,
+        loading: Boolean(state.config.billing?.apiKey),
+        failed: [],
+      }
+    : undefined;
+
   await ctx.ui.custom<void>((tui, theme, _keybindings, done) => {
     const settingsTheme = buildSettingsTheme(theme);
     let list: SettingsList;
@@ -253,6 +273,34 @@ async function openSettingsMenu(
     void refreshDiscoveredModels(pi, state)
       .then(() => tui.requestRender())
       .catch(() => {});
+
+    // Fetch today's usage + balance once per open (60s client cache matches
+    // the server-side cache on the usage endpoint; no polling).
+    const billingToken = state.config.billing?.apiKey;
+    if (billingProfile && billingToken) {
+      void fetchBillingSnapshot(billingToken, { consoleUrl: billingProfile.consoleUrl })
+        .then((snapshot) => {
+          billingSlug = snapshot.workspaceSlug;
+          billingStatus = {
+            tokenPresent: true,
+            apiKeyEnv: billingProfile.apiKeyEnv,
+            loading: false,
+            usage: snapshot.usage,
+            balance: snapshot.balance,
+            failed: snapshot.failed,
+          };
+          tui.requestRender();
+        })
+        .catch(() => {
+          billingStatus = {
+            tokenPresent: true,
+            apiKeyEnv: billingProfile.apiKeyEnv,
+            loading: false,
+            failed: ["usage", "balance"],
+          };
+          tui.requestRender();
+        });
+    }
 
     const refreshValues = () => {
       list.updateValue("scope", scope);
@@ -307,6 +355,16 @@ async function openSettingsMenu(
         save();
         return;
       }
+      if (id === "billing") {
+        // Action item, not a persisted setting: Enter opens the console
+        // billing dashboard (deep link when the workspace slug resolved).
+        if (billingProfile) {
+          const url = billingDashboardUrl(billingProfile.consoleUrl, billingSlug);
+          openExternalUrl(url);
+          ctx.ui.notify(`Opened ${url}`, "info");
+        }
+        return;
+      }
     };
 
     const scopeItem: SettingItem = {
@@ -350,6 +408,15 @@ async function openSettingsMenu(
         values: ["true", "false"],
       },
     ];
+    if (billingProfile) {
+      items.push({
+        id: "billing",
+        label: "Billing dashboard",
+        description: `Open the ${getLabel()} billing page in your browser`,
+        currentValue: "open ↗",
+        values: ["open ↗"],
+      });
+    }
 
     list = new SettingsList(items, items.length, settingsTheme, onChange, () => done(), {
       enableSearch: true,
@@ -365,6 +432,7 @@ async function openSettingsMenu(
           truncateToWidth(modelRegistrationSummary(drafts[scope]), width),
           truncateToWidth(catalogSummary(buildCatalogStatus(state)), width),
           truncateToWidth(verifySummary(drafts[scope]), width),
+          ...(billingStatus ? [truncateToWidth(billingSummary(billingStatus), width)] : []),
           "",
           ...list.render(width),
         ];
@@ -513,7 +581,7 @@ export function createProvider(
 
     const settingsCommand = `${PROVIDER_ID}-settings`;
     pi.registerCommand(settingsCommand, {
-      description: `Configure ${getLabel()} (models, thinking, TLS pinning, verification)`,
+      description: `Configure ${getLabel()} (models, thinking, TLS pinning, billing)`,
       handler: async (_args, ctx) => {
         if (ctx.mode !== "tui") {
           ctx.ui.notify(`${settingsCommand} requires TUI mode`, "error");
@@ -552,6 +620,18 @@ export { PROVIDER_ID, PROVIDER_VERSION };
 export { profile as getProviderProfile } from "./src/profile.ts";
 export { loadAciCloudConfig } from "./src/config.ts";
 export { discoverAciModels, mapAciServerModel, inferThinkingFormat } from "./src/models.ts";
+export {
+  billingDashboardUrl,
+  clearBillingCache,
+  fetchBillingSnapshot,
+  formatCount,
+  formatUsd,
+  todayWindow,
+  type BillingBalance,
+  type BillingSnapshot,
+  type DailyUsageSummary,
+} from "./src/billing.ts";
+export { openExternalUrl } from "./src/open-url.ts";
 // Attestation/audit helpers for consumers. The prevention layer (verified
 // ACI connection + pinned fetch) lives in src/aci-connection.ts; receipt
 // verification is not part of this plugin.

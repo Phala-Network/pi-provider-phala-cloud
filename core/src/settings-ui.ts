@@ -11,6 +11,7 @@ import {
   getGlobalAciCloudConfigPath,
   getProjectAciCloudConfigPath,
 } from "./config.ts";
+import { formatCount, formatUsd } from "./billing.ts";
 import { PROVIDER_VERSION } from "./constants.ts";
 import { profile } from "./profile.ts";
 
@@ -97,4 +98,49 @@ export function catalogSummary(status: CatalogStatus): string {
       : "no decision models";
   const auth = status.authenticated ? `auth: ${status.authSource}` : `auth: none (${status.authSource})`;
   return `Catalog: ${catalog}, ${decisions} | ${auth}`;
+}
+
+/** Live billing/usage snapshot shown in the settings summary. */
+export interface BillingLineStatus {
+  /** A console API token resolved from config/env. */
+  tokenPresent: boolean;
+  /** Env var name for the token (used in the not-configured hint). */
+  apiKeyEnv: string;
+  /** Fetch in flight. */
+  loading: boolean;
+  usage?: { totalRequests: number; totalTokens: number; totalCost: string };
+  balance?: { balance: string; grantedBalance?: string };
+  /** Endpoint names that failed (partial data may still be shown). */
+  failed: string[];
+}
+
+function isZeroDecimal(raw: string | undefined): boolean {
+  return raw === undefined || /^-?0+(\.0+)?$/.test(raw);
+}
+
+export function billingSummary(status: BillingLineStatus): string {
+  if (!status.tokenPresent) {
+    return `Billing: set ${status.apiKeyEnv} (console Settings → API Keys) to see usage & balance`;
+  }
+  if (status.loading) return "Billing: loading usage & balance…";
+  const parts: string[] = [];
+  if (status.usage) {
+    parts.push(
+      `today ${formatCount(status.usage.totalRequests)} req, ` +
+        `${formatCount(status.usage.totalTokens)} tok, ${formatUsd(status.usage.totalCost)}`,
+    );
+  }
+  if (status.balance) {
+    // Granted credits cannot pay for inference; show them as an aside, not
+    // summed into the spendable balance.
+    const granted = isZeroDecimal(status.balance.grantedBalance)
+      ? ""
+      : ` (+${formatUsd(status.balance.grantedBalance)} granted)`;
+    parts.push(`balance ${formatUsd(status.balance.balance)}${granted}`);
+  }
+  if (parts.length === 0) {
+    return `Billing: unavailable (${status.failed.join(", ") || "request failed"})`;
+  }
+  const degraded = status.failed.length > 0 ? ` | unavailable: ${status.failed.join(", ")}` : "";
+  return `Billing: ${parts.join(" | ")}${degraded}`;
 }
