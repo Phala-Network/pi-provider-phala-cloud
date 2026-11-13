@@ -162,13 +162,13 @@ export default createProvider({
   },
   fallbackModels: [
     {
-      id: "phala/qwen3.5-27b",
+      id: "qwen/qwen3.5-27b",
       name: "Phala Qwen3.5 27B",
       reasoning: true,
       input: ["text"],
-      cost: { input: 0.3, output: 2.4, cacheRead: 0, cacheWrite: 0 },
-      contextWindow: 262000,
-      maxTokens: 8192,
+      cost: { input: 0.3, output: 2.4, cacheRead: 0.03, cacheWrite: 0 },
+      contextWindow: 262144,
+      maxTokens: 65536,
     },
   ],
   oauth: {
