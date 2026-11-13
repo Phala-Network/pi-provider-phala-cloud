@@ -58,6 +58,7 @@ import {
   billingDashboardUrl,
   fetchBillingSnapshot,
   fetchSelfCredits,
+  fetchSelfUsage,
 } from "./src/billing.ts";
 import { openExternalUrl } from "./src/open-url.ts";
 import { isAciProjectConfigApproved } from "./src/project-trust.ts";
@@ -255,11 +256,16 @@ async function openSettingsMenu(
   // Billing/usage display (profile-gated): the console API token comes from
   // the effective config (billing.apiKey) or the profile's billing env var.
   const billingProfile = profile().billing;
+  const billingToken = state.config.billing?.apiKey;
+  // No console token: the Bearer private_ai endpoints (inference-key auth)
+  // still expose workspace credits + daily usage, so OAuth login alone
+  // shows both.
+  const inferenceKey = billingProfile?.selfUrl && !billingToken ? resolveApiKey() : "";
   let billingStatus: BillingLineStatus | undefined = billingProfile
     ? {
-        tokenPresent: Boolean(state.config.billing?.apiKey),
+        tokenPresent: Boolean(billingToken),
         apiKeyEnv: billingProfile.apiKeyEnv,
-        loading: Boolean(state.config.billing?.apiKey),
+        loading: Boolean(billingToken) || Boolean(inferenceKey),
         failed: [],
       }
     : undefined;
@@ -276,7 +282,6 @@ async function openSettingsMenu(
 
     // Fetch today's usage + balance once per open (60s client cache matches
     // the server-side cache on the usage endpoint; no polling).
-    const billingToken = state.config.billing?.apiKey;
     if (billingProfile && billingToken) {
       void fetchBillingSnapshot(billingToken, { consoleUrl: billingProfile.consoleUrl })
         .then((snapshot) => {
@@ -301,25 +306,27 @@ async function openSettingsMenu(
         });
     }
 
-    // No console token: the Bearer self endpoint still exposes workspace
-    // credits (inference-key auth), so OAuth login alone shows the balance.
-    const inferenceKey = billingProfile && !billingToken ? resolveApiKey() : "";
-    if (billingProfile?.selfUrl && inferenceKey) {
-      void fetchSelfCredits(inferenceKey)
-        .then((credits) => {
+    if (billingProfile && inferenceKey) {
+      void Promise.allSettled([fetchSelfCredits(inferenceKey), fetchSelfUsage(inferenceKey)])
+        .then(([creditsRes, usageRes]) => {
           // A console token configured mid-open wins over the OAuth path.
           if (billingStatus?.tokenPresent) return;
+          const failed: string[] = [];
+          if (creditsRes.status === "rejected") failed.push("balance");
+          if (usageRes.status === "rejected") failed.push("usage");
+          const credits = creditsRes.status === "fulfilled" ? creditsRes.value : undefined;
           billingStatus = {
             tokenPresent: false,
             apiKeyEnv: billingProfile.apiKeyEnv,
             loading: false,
-            failed: [],
-            oauthBalance: { balance: credits.balance, grantedBalance: credits.grantedBalance },
+            failed,
+            usage: usageRes.status === "fulfilled" ? usageRes.value : undefined,
+            oauthBalance: credits && {
+              balance: credits.balance,
+              grantedBalance: credits.grantedBalance,
+            },
           };
           tui.requestRender();
-        })
-        .catch(() => {
-          // Key not console-bound or endpoint down: keep the hint line.
         });
     }
 
@@ -650,8 +657,10 @@ export {
   billingDashboardUrl,
   clearBillingCache,
   clearSelfCreditsCache,
+  clearSelfUsageCache,
   fetchBillingSnapshot,
   fetchSelfCredits,
+  fetchSelfUsage,
   formatCount,
   formatUsd,
   todayWindow,

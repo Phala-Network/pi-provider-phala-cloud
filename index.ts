@@ -160,8 +160,11 @@ export default createProvider({
     apiKeyEnv: "PHALA_CLOUD_API_KEY",
     consoleUrl: "https://cloud.phala.com",
     // Bearer-authenticated; embeds workspace credits, so OAuth login alone
-    // can show the balance (usage still needs the console token).
+    // can show the balance without a console API token.
     selfUrl: "https://cloud-api.phala.com/api/v1/private_ai/self",
+    // Bearer-authenticated daily usage (same ClickHouse source and response
+    // shape as the console /redpill/usage/daily endpoint).
+    usageDailyUrl: "https://cloud-api.phala.com/api/v1/private_ai/usage/daily",
   },
   fallbackModels: [
     {

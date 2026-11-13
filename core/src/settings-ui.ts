@@ -122,15 +122,15 @@ function isZeroDecimal(raw: string | undefined): boolean {
 }
 
 export function billingSummary(status: BillingLineStatus): string {
-  if (!status.tokenPresent) {
-    if (status.oauthBalance) {
-      return `Billing: ${formatUsd(status.oauthBalance.balance)} available — set ${status.apiKeyEnv} (console Settings → API Keys) for usage`;
-    }
-    // The console billing API only accepts workspace API tokens (X-API-Key);
-    // the inference key gets 401 there — say so in the hint.
-    return `Billing: set ${status.apiKeyEnv} (console Settings → API Keys; the inference key is not accepted) to see usage & balance`;
-  }
   if (status.loading) return "Billing: loading usage & balance…";
+  const balance = status.balance ?? status.oauthBalance;
+  if (!status.usage && !balance) {
+    if (status.tokenPresent) {
+      return `Billing: unavailable (${status.failed.join(", ") || "request failed"})`;
+    }
+    // No console token and the Bearer (inference-key) path produced nothing.
+    return `Billing: set ${status.apiKeyEnv} (console Settings → API Keys) to see usage & balance`;
+  }
   const parts: string[] = [];
   if (status.usage) {
     parts.push(
@@ -138,16 +138,13 @@ export function billingSummary(status: BillingLineStatus): string {
         `${formatCount(status.usage.totalTokens)} tok, ${formatUsd(status.usage.totalCost)}`,
     );
   }
-  if (status.balance) {
+  if (balance) {
     // Granted credits cannot pay for inference; show them as an aside, not
     // summed into the spendable balance.
-    const granted = isZeroDecimal(status.balance.grantedBalance)
+    const granted = isZeroDecimal(balance.grantedBalance)
       ? ""
-      : ` (+${formatUsd(status.balance.grantedBalance)} granted)`;
-    parts.push(`balance ${formatUsd(status.balance.balance)}${granted}`);
-  }
-  if (parts.length === 0) {
-    return `Billing: unavailable (${status.failed.join(", ") || "request failed"})`;
+      : ` (+${formatUsd(balance.grantedBalance)} granted)`;
+    parts.push(`balance ${formatUsd(balance.balance)}${granted}`);
   }
   const degraded = status.failed.length > 0 ? ` | unavailable: ${status.failed.join(", ")}` : "";
   return `Billing: ${parts.join(" | ")}${degraded}`;

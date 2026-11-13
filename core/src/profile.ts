@@ -70,6 +70,11 @@ export interface AciBillingProfile {
    *  inference (sk-*) key IS accepted here, so OAuth login alone can show
    *  the balance without a console API token. */
   selfUrl?: string;
+  /** Optional Bearer-authenticated daily-usage endpoint (e.g. cloud-api's
+   *  /api/v1/private_ai/usage/daily). Same auth and response shape as the
+   *  console's /redpill/usage/daily; query params start_date/end_date
+   *  (ISO 8601) + timezone (IANA). */
+  usageDailyUrl?: string;
 }
 
 /** OAuth config the core forwards to pi's registerProvider `oauth` block. */

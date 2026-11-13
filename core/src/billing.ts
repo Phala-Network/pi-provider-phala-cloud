@@ -10,6 +10,12 @@
 //   /api/v1/redpill/usage/daily  — daily usage + cost aggregates
 //   /api/v1/billing/balance      — workspace credit balance
 //
+// Bearer alternatives (inference-key auth, profile.billing.selfUrl /
+// .usageDailyUrl): the private_ai endpoints expose the same data to the
+// OAuth / pasted inference key — self embeds workspace credits (same PG
+// row as /billing/balance) and usage/daily reads the same ClickHouse
+// spend_logs as the console endpoint.
+//
 // Monetary amounts are decimal STRINGS (up to 18 fractional digits, USD).
 // They are passed through untouched and only trimmed for display — never
 // parsed into floats.
@@ -334,4 +340,39 @@ export async function fetchSelfCredits(
   const value: SelfCredits = { balance, grantedBalance: credits ? str(credits.granted_balance) : undefined };
   selfCreditsCache = { key: bearerToken, at: Date.now(), value };
   return value;
+}
+
+let selfUsageCache: { key: string; at: number; value: DailyUsageSummary } | undefined;
+
+/** Drop the cached self-usage snapshot (token/config change, tests). */
+export function clearSelfUsageCache(): void {
+  selfUsageCache = undefined;
+}
+
+/** Today's usage via the Bearer private_ai endpoint (inference-key auth).
+ *  Same ClickHouse source and top-level response shape as the console's
+ *  /redpill/usage/daily — the parser is shared verbatim. */
+export async function fetchSelfUsage(
+  bearerToken: string,
+  options: FetchBillingOptions = {},
+): Promise<DailyUsageSummary> {
+  const base = profile().billing?.usageDailyUrl;
+  if (!base) throw new Error("billing usage endpoint is not configured for this profile");
+  if (!options.noCache && selfUsageCache?.key === bearerToken) {
+    if (Date.now() - selfUsageCache.at < BILLING_CACHE_TTL_MS) return selfUsageCache.value;
+  }
+  const timeZone = options.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone ?? "UTC";
+  const { start, end } = todayWindow(timeZone);
+  const url =
+    `${base}?start_date=${encodeURIComponent(start)}` +
+    `&end_date=${encodeURIComponent(end)}&timezone=${encodeURIComponent(timeZone)}`;
+  const res = await fetch(url, {
+    headers: { Authorization: `Bearer ${bearerToken}`, Accept: "application/json" },
+    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const usage = parseUsage(await res.json());
+  if (!usage) throw new Error("unexpected usage response shape");
+  selfUsageCache = { key: bearerToken, at: Date.now(), value: usage };
+  return usage;
 }
