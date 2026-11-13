@@ -254,7 +254,6 @@ async function openSettingsMenu(
   // Billing/usage display (profile-gated): the console API token comes from
   // the effective config (billing.apiKey) or the profile's billing env var.
   const billingProfile = profile().billing;
-  let billingSlug: string | undefined;
   let billingStatus: BillingLineStatus | undefined = billingProfile
     ? {
         tokenPresent: Boolean(state.config.billing?.apiKey),
@@ -280,7 +279,6 @@ async function openSettingsMenu(
     if (billingProfile && billingToken) {
       void fetchBillingSnapshot(billingToken, { consoleUrl: billingProfile.consoleUrl })
         .then((snapshot) => {
-          billingSlug = snapshot.workspaceSlug;
           billingStatus = {
             tokenPresent: true,
             apiKeyEnv: billingProfile.apiKeyEnv,
@@ -357,9 +355,9 @@ async function openSettingsMenu(
       }
       if (id === "billing") {
         // Action item, not a persisted setting: Enter opens the console
-        // billing dashboard (deep link when the workspace slug resolved).
+        // billing dashboard.
         if (billingProfile) {
-          const url = billingDashboardUrl(billingProfile.consoleUrl, billingSlug);
+          const url = billingDashboardUrl(billingProfile.consoleUrl);
           openExternalUrl(url);
           ctx.ui.notify(`Opened ${url}`, "info");
         }

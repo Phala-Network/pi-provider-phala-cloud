@@ -9,7 +9,6 @@
 // Endpoints (all GET, X-API-Key auth):
 //   /api/v1/redpill/usage/daily  — daily usage + cost aggregates
 //   /api/v1/billing/balance      — workspace credit balance
-//   /api/v1/workspaces           — workspace list (for the billing URL slug)
 //
 // Monetary amounts are decimal STRINGS (up to 18 fractional digits, USD).
 // They are passed through untouched and only trimmed for display — never
@@ -41,8 +40,6 @@ export interface BillingBalance {
 export interface BillingSnapshot {
   usage?: DailyUsageSummary;
   balance?: BillingBalance;
-  /** Workspace slug for the console billing URL; undefined when unknown. */
-  workspaceSlug?: string;
   /** Names of endpoints whose fetch/parse failed (soft-degraded display). */
   failed: string[];
 }
@@ -223,20 +220,6 @@ function parseBalance(raw: unknown): BillingBalance | undefined {
   };
 }
 
-/** `/api/v1/workspaces` is a paginated envelope; with X-API-Key auth `data`
- *  holds at most the token's own workspace. `slug` is nullable — undefined
- *  sends the caller to the console's fallback billing route. */
-function parseWorkspaceSlug(raw: unknown): string | undefined {
-  if (!isRecord(raw) || !Array.isArray(raw.data)) return undefined;
-  for (const workspace of raw.data) {
-    if (isRecord(workspace)) {
-      const slug = str(workspace.slug);
-      if (slug) return slug;
-    }
-  }
-  return undefined;
-}
-
 async function fetchJson(url: string, token: string): Promise<unknown> {
   const res = await fetch(url, {
     headers: { "X-API-Key": token, Accept: "application/json" },
@@ -279,12 +262,10 @@ export async function fetchBillingSnapshot(
     `${consoleUrl}/api/v1/redpill/usage/daily?start_date=${encodeURIComponent(start)}` +
     `&end_date=${encodeURIComponent(end)}&timezone=${encodeURIComponent(timeZone)}`;
   const balanceUrl = `${consoleUrl}/api/v1/billing/balance`;
-  const workspacesUrl = `${consoleUrl}/api/v1/workspaces`;
 
-  const [usageRes, balanceRes, workspacesRes] = await Promise.allSettled([
+  const [usageRes, balanceRes] = await Promise.allSettled([
     fetchJson(usageUrl, token),
     fetchJson(balanceUrl, token),
-    fetchJson(workspacesUrl, token),
   ]);
 
   const failed: string[] = [];
@@ -302,19 +283,12 @@ export async function fetchBillingSnapshot(
   } else {
     failed.push("balance");
   }
-  // The slug only deep-links the billing menu item; a failure is silent
-  // (the item falls back to the console's /cost route).
-  const workspaceSlug =
-    workspacesRes.status === "fulfilled" ? parseWorkspaceSlug(workspacesRes.value) : undefined;
-
-  const snapshot: BillingSnapshot = { usage, balance, workspaceSlug, failed };
+  const snapshot: BillingSnapshot = { usage, balance, failed };
   snapshotCache = { key: cacheKey, at: Date.now(), value: snapshot };
   return snapshot;
 }
 
-/** Deep link to the console billing page; `/cost` is the stable fallback
- *  route when the workspace slug is unknown. */
-export function billingDashboardUrl(consoleUrl: string, slug?: string): string {
-  const base = consoleUrl.replace(/\/+$/, "");
-  return slug ? `${base}/${encodeURIComponent(slug)}/billing` : `${base}/cost`;
+/** Deep link to the console billing page. */
+export function billingDashboardUrl(consoleUrl: string): string {
+  return `${consoleUrl.replace(/\/+$/, "")}/billing`;
 }
