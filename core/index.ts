@@ -556,9 +556,14 @@ export function createProvider(
       const projectTrusted = isAciProjectConfigApproved(ctx);
       applyEffectiveConfig(pi, state, ctx.cwd, projectTrusted);
       // Resolve the attested SPKI from a fresh report and pin TLS for this
-      // session (fail-closed; inference is blocked if it cannot be done,
-      // unless the user opted into failOpenOnUnpinned).
-      await installAttestedTlsPin(state);
+      // session. Fire-and-forget: pi awaits session_start handlers serially,
+      // and the attestation (report fetch + online PCCS quote verification +
+      // pinned probe) can take seconds — awaiting it stalled every /new,
+      // /resume and settings-save reload. The fail-closed gate is installed
+      // synchronously inside establish(), so requests in the attestation
+      // window wait (abortably) on the in-flight establish instead of
+      // downgrading to CA-TLS.
+      void installAttestedTlsPin(state).catch(() => {});
       // Refresh the catalog snapshot: credentials may have appeared since
       // the extension loaded (e.g. /login in a previous session), the first
       // fetch may have failed, and the gateway catalog may have changed.
