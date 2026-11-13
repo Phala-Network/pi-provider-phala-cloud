@@ -159,6 +159,9 @@ export default createProvider({
   billing: {
     apiKeyEnv: "PHALA_CLOUD_API_KEY",
     consoleUrl: "https://cloud.phala.com",
+    // Bearer-authenticated; embeds workspace credits, so OAuth login alone
+    // can show the balance (usage still needs the console token).
+    selfUrl: "https://cloud-api.phala.com/api/v1/private_ai/self",
   },
   fallbackModels: [
     {

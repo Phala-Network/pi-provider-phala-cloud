@@ -110,6 +110,9 @@ export interface BillingLineStatus {
   loading: boolean;
   usage?: { totalRequests: number; totalTokens: number; totalCost: string };
   balance?: { balance: string; grantedBalance?: string };
+  /** Balance read via the Bearer self endpoint (inference-key auth) when no
+   *  console token is configured. Usage still requires the console token. */
+  oauthBalance?: { balance: string; grantedBalance?: string };
   /** Endpoint names that failed (partial data may still be shown). */
   failed: string[];
 }
@@ -120,8 +123,11 @@ function isZeroDecimal(raw: string | undefined): boolean {
 
 export function billingSummary(status: BillingLineStatus): string {
   if (!status.tokenPresent) {
+    if (status.oauthBalance) {
+      return `Billing: ${formatUsd(status.oauthBalance.balance)} available — set ${status.apiKeyEnv} (console Settings → API Keys) for usage`;
+    }
     // The console billing API only accepts workspace API tokens (X-API-Key);
-    // the OAuth/pasted inference key gets 401 there — say so in the hint.
+    // the inference key gets 401 there — say so in the hint.
     return `Billing: set ${status.apiKeyEnv} (console Settings → API Keys; the inference key is not accepted) to see usage & balance`;
   }
   if (status.loading) return "Billing: loading usage & balance…";

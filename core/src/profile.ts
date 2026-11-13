@@ -63,8 +63,13 @@ export interface AciBillingProfile {
   apiKeyEnv: string;
   /** Console origin, e.g. "https://cloud.phala.com" (no trailing slash).
    *  API endpoints hang off `<consoleUrl>/api/v1/...`; the billing dashboard
-   *  is `<consoleUrl>/<workspace-slug>/billing`. */
+   *  is `<consoleUrl>/billing`. */
   consoleUrl: string;
+  /** Optional Bearer-authenticated self/metadata endpoint that embeds the
+   *  workspace credits (e.g. cloud-api's /api/v1/private_ai/self). The
+   *  inference (sk-*) key IS accepted here, so OAuth login alone can show
+   *  the balance without a console API token. */
+  selfUrl?: string;
 }
 
 /** OAuth config the core forwards to pi's registerProvider `oauth` block. */

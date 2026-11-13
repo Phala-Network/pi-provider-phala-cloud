@@ -292,3 +292,46 @@ export async function fetchBillingSnapshot(
 export function billingDashboardUrl(consoleUrl: string): string {
   return `${consoleUrl.replace(/\/+$/, "")}/billing`;
 }
+
+/** Workspace credits read via the Bearer-authenticated self endpoint
+ *  (`credits` shares the PG row with /api/v1/billing/balance — real-time,
+ *  no cache server-side). The inference (sk-*) key is accepted, so OAuth
+ *  login alone can show the balance without a console API token. */
+export interface SelfCredits {
+  /** Spendable balance (USD decimal string). Excludes granted credits. */
+  balance: string;
+  /** Granted (promotional) credits; NOT usable for Private AI inference. */
+  grantedBalance?: string;
+}
+
+let selfCreditsCache: { key: string; at: number; value: SelfCredits } | undefined;
+
+/** Drop the cached self-credits snapshot (token/config change, tests). */
+export function clearSelfCreditsCache(): void {
+  selfCreditsCache = undefined;
+}
+
+/** Fetch workspace credits with the inference key; soft-degrades (throws)
+ *  when the profile has no selfUrl or the key is not console-bound. */
+export async function fetchSelfCredits(
+  bearerToken: string,
+  options: { noCache?: boolean } = {},
+): Promise<SelfCredits> {
+  const selfUrl = profile().billing?.selfUrl;
+  if (!selfUrl) throw new Error("billing self endpoint is not configured for this profile");
+  if (!options.noCache && selfCreditsCache?.key === bearerToken) {
+    if (Date.now() - selfCreditsCache.at < BILLING_CACHE_TTL_MS) return selfCreditsCache.value;
+  }
+  const res = await fetch(selfUrl, {
+    headers: { Authorization: `Bearer ${bearerToken}`, Accept: "application/json" },
+    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const raw: unknown = await res.json();
+  const credits = isRecord(raw) && isRecord(raw.credits) ? raw.credits : undefined;
+  const balance = credits ? str(credits.balance) : undefined;
+  if (balance === undefined) throw new Error("unexpected self response shape");
+  const value: SelfCredits = { balance, grantedBalance: credits ? str(credits.granted_balance) : undefined };
+  selfCreditsCache = { key: bearerToken, at: Date.now(), value };
+  return value;
+}

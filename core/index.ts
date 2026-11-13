@@ -57,6 +57,7 @@ import {
 import {
   billingDashboardUrl,
   fetchBillingSnapshot,
+  fetchSelfCredits,
 } from "./src/billing.ts";
 import { openExternalUrl } from "./src/open-url.ts";
 import { isAciProjectConfigApproved } from "./src/project-trust.ts";
@@ -297,6 +298,28 @@ async function openSettingsMenu(
             failed: ["usage", "balance"],
           };
           tui.requestRender();
+        });
+    }
+
+    // No console token: the Bearer self endpoint still exposes workspace
+    // credits (inference-key auth), so OAuth login alone shows the balance.
+    const inferenceKey = billingProfile && !billingToken ? resolveApiKey() : "";
+    if (billingProfile?.selfUrl && inferenceKey) {
+      void fetchSelfCredits(inferenceKey)
+        .then((credits) => {
+          // A console token configured mid-open wins over the OAuth path.
+          if (billingStatus?.tokenPresent) return;
+          billingStatus = {
+            tokenPresent: false,
+            apiKeyEnv: billingProfile.apiKeyEnv,
+            loading: false,
+            failed: [],
+            oauthBalance: { balance: credits.balance, grantedBalance: credits.grantedBalance },
+          };
+          tui.requestRender();
+        })
+        .catch(() => {
+          // Key not console-bound or endpoint down: keep the hint line.
         });
     }
 
@@ -626,13 +649,16 @@ export { discoverAciModels, mapAciServerModel, inferThinkingFormat } from "./src
 export {
   billingDashboardUrl,
   clearBillingCache,
+  clearSelfCreditsCache,
   fetchBillingSnapshot,
+  fetchSelfCredits,
   formatCount,
   formatUsd,
   todayWindow,
   type BillingBalance,
   type BillingSnapshot,
   type DailyUsageSummary,
+  type SelfCredits,
 } from "./src/billing.ts";
 export { openExternalUrl } from "./src/open-url.ts";
 // Attestation/audit helpers for consumers. The prevention layer (verified
