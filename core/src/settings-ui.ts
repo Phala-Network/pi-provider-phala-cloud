@@ -120,7 +120,9 @@ function isZeroDecimal(raw: string | undefined): boolean {
 
 export function billingSummary(status: BillingLineStatus): string {
   if (!status.tokenPresent) {
-    return `Billing: set ${status.apiKeyEnv} (console Settings → API Keys) to see usage & balance`;
+    // The console billing API only accepts workspace API tokens (X-API-Key);
+    // the OAuth/pasted inference key gets 401 there — say so in the hint.
+    return `Billing: set ${status.apiKeyEnv} (console Settings → API Keys; the inference key is not accepted) to see usage & balance`;
   }
   if (status.loading) return "Billing: loading usage & balance…";
   const parts: string[] = [];
