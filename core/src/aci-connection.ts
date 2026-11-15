@@ -14,6 +14,8 @@
 //
 // Serving enforcement is deliberately off (requireReceipt/requireVerified:
 // false): this plugin ships prevention (pinning), not the receipt audit.
+// receiptHistorySize: 0 follows from that — we never call verifyReceipt(),
+// so recording receipts would only pay for a per-response clone + SHA-256.
 // Quote verification against the Phala PCCS is ON — that is what makes the
 // pinned SPKI hardware-bound; it adds a runtime network dependency that the
 // old binding-only check did not have.
@@ -195,6 +197,7 @@ export class AciConnectionManager {
       const connection = await connectAci({
         baseURL: getGatewayRoot(config.baseUrl),
         serving: { requireReceipt: false, requireVerified: false },
+        receiptHistorySize: 0,
         timeoutMs: DEFAULT_ATTESTATION_FETCH_TIMEOUT_MS,
         bootstrapFetch: authorizedFetch(apiKey),
         proxy: envProxy(),
