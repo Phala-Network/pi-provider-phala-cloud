@@ -47,6 +47,34 @@ export interface ProviderProfile {
    *  var. The shell owns the flow implementation; the core only transports
    *  the config. */
   oauth?: AciOAuthConfig;
+  /** Optional cloud-console billing block. When present, the settings page
+   *  shows today's usage/spend and the workspace balance (fetched with a
+   *  console API token, NOT the inference key) plus a menu item that opens
+   *  the console billing dashboard. */
+  billing?: AciBillingProfile;
+}
+
+/** Cloud-console identity for usage/billing display. The console API is a
+ *  different service from the inference gateway and authenticates with a
+ *  workspace API token sent as `X-API-Key`. */
+export interface AciBillingProfile {
+  /** Env var holding the console API token (e.g. "PHALA_CLOUD_API_KEY").
+   *  Also readable from config as `billing.apiKey`. */
+  apiKeyEnv: string;
+  /** Console origin, e.g. "https://cloud.phala.com" (no trailing slash).
+   *  API endpoints hang off `<consoleUrl>/api/v1/...`; the billing dashboard
+   *  is `<consoleUrl>/billing`. */
+  consoleUrl: string;
+  /** Optional Bearer-authenticated self/metadata endpoint that embeds the
+   *  workspace credits (e.g. cloud-api's /api/v1/private_ai/self). The
+   *  inference (sk-*) key IS accepted here, so OAuth login alone can show
+   *  the balance without a console API token. */
+  selfUrl?: string;
+  /** Optional Bearer-authenticated daily-usage endpoint (e.g. cloud-api's
+   *  /api/v1/private_ai/usage/daily). Same auth and response shape as the
+   *  console's /redpill/usage/daily; query params start_date/end_date
+   *  (ISO 8601) + timezone (IANA). */
+  usageDailyUrl?: string;
 }
 
 /** OAuth config the core forwards to pi's registerProvider `oauth` block. */

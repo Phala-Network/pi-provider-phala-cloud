@@ -56,6 +56,35 @@ pi -e .          # from this directory after npm install
 # then: /model phala/<model-id>
 ```
 
+The model catalog is fetched from the gateway at load and re-fetched on
+every session start; opening `/phala-settings` also refreshes it. The
+settings page shows the credential state, the registered chat/decision
+model counts, and whether the live catalog or the fallback is in use.
+
+### Usage & billing in `/phala-settings`
+
+The settings page can show **today's usage** (requests, tokens, spend) and
+the **workspace balance**, and includes a **Billing dashboard** menu item
+that opens the console billing page in your browser.
+
+These come from the Phala Cloud console API, which does **not** accept the
+inference (`sk-...`) key. Create a workspace API token at
+[cloud.phala.com](https://cloud.phala.com) → Settings → API Keys, then expose
+it either way:
+
+```bash
+export PHALA_CLOUD_API_KEY=...
+# or in ~/.pi/providers/phala/config.json:
+# { "billing": { "apiKey": "..." } }
+```
+
+Without the token the panel degrades to a hint line; the Billing dashboard
+item still opens `https://cloud.phala.com/cost` (deep link
+`/<workspace-slug>/billing` once the token is set). Data is fetched once
+when the panel opens and cached for 60s (matching the server-side cache);
+granted/promotional credits are shown separately since they cannot pay for
+Private AI inference.
+
 ## Auth
 
 This brand supports **OAuth device login** via pi's `/login phala`
@@ -69,7 +98,8 @@ OAuth code lives in this repo's brand `index.ts` (maintained in SoT under
 Layered config (`~/.pi/providers/phala/config.json`, project
 `.pi/providers/phala/config.json`, env, runtime) supports `baseUrl`,
 `models.isTeeOnly`, `models.thinkingFormat`, `models.allowlist`,
-`models.defaultModel`, `verify.failOpenOnUnpinned` and `pinning.enabled`.
+`models.defaultModel`, `verify.failOpenOnUnpinned`, `pinning.enabled`
+and `billing.apiKey`.
 
 `models.overrides` patches per-model compatibility on top of the builtin
 quirk table in `core/src/models.ts` (keyed by catalog model id; merged

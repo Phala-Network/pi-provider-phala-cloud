@@ -11,6 +11,7 @@ import {
   getGlobalAciCloudConfigPath,
   getProjectAciCloudConfigPath,
 } from "./config.ts";
+import { formatCount, formatUsd } from "./billing.ts";
 import { PROVIDER_VERSION } from "./constants.ts";
 import { profile } from "./profile.ts";
 
@@ -70,4 +71,81 @@ export function modelRegistrationSummary(config: AciCloudConfig): string {
 export function verifySummary(config: AciCloudConfig): string {
   return `Pin: ${config.pinning.enabled ? "required" : "disabled"}, ` +
     `fail-open-unpinned ${formatBoolean(config.verify.failOpenOnUnpinned)}`;
+}
+
+/** Live auth + catalog snapshot shown in the settings summary line. */
+export interface CatalogStatus {
+  /** A usable API key resolves right now. */
+  authenticated: boolean;
+  /** Human-readable credential source ("none" when unauthenticated). */
+  authSource: string;
+  /** Registered chat models. */
+  chatCount: number;
+  /** Registered classifier (decision) models. */
+  classifierCount: number;
+  /** True when the profile fallback catalog is shown instead of the live one. */
+  fallback: boolean;
+}
+
+export function catalogSummary(status: CatalogStatus): string {
+  const plural = (n: number) => `model${n === 1 ? "" : "s"}`;
+  const catalog = status.fallback
+    ? `fallback (${status.chatCount} ${plural(status.chatCount)})`
+    : `${status.chatCount} chat ${plural(status.chatCount)}`;
+  const decisions =
+    status.classifierCount > 0
+      ? `${status.classifierCount} decision ${plural(status.classifierCount)}`
+      : "no decision models";
+  const auth = status.authenticated ? `auth: ${status.authSource}` : `auth: none (${status.authSource})`;
+  return `Catalog: ${catalog}, ${decisions} | ${auth}`;
+}
+
+/** Live billing/usage snapshot shown in the settings summary. */
+export interface BillingLineStatus {
+  /** A console API token resolved from config/env. */
+  tokenPresent: boolean;
+  /** Env var name for the token (used in the not-configured hint). */
+  apiKeyEnv: string;
+  /** Fetch in flight. */
+  loading: boolean;
+  usage?: { totalRequests: number; totalTokens: number; totalCost: string };
+  balance?: { balance: string; grantedBalance?: string };
+  /** Balance read via the Bearer self endpoint (inference-key auth) when no
+   *  console token is configured. Usage still requires the console token. */
+  oauthBalance?: { balance: string; grantedBalance?: string };
+  /** Endpoint names that failed (partial data may still be shown). */
+  failed: string[];
+}
+
+function isZeroDecimal(raw: string | undefined): boolean {
+  return raw === undefined || /^-?0+(\.0+)?$/.test(raw);
+}
+
+export function billingSummary(status: BillingLineStatus): string {
+  if (status.loading) return "Billing: loading usage & balance…";
+  const balance = status.balance ?? status.oauthBalance;
+  if (!status.usage && !balance) {
+    if (status.tokenPresent) {
+      return `Billing: unavailable (${status.failed.join(", ") || "request failed"})`;
+    }
+    // No console token and the Bearer (inference-key) path produced nothing.
+    return `Billing: set ${status.apiKeyEnv} (console Settings → API Keys) to see usage & balance`;
+  }
+  const parts: string[] = [];
+  if (status.usage) {
+    parts.push(
+      `today ${formatCount(status.usage.totalRequests)} req, ` +
+        `${formatCount(status.usage.totalTokens)} tok, ${formatUsd(status.usage.totalCost)}`,
+    );
+  }
+  if (balance) {
+    // Granted credits cannot pay for inference; show them as an aside, not
+    // summed into the spendable balance.
+    const granted = isZeroDecimal(balance.grantedBalance)
+      ? ""
+      : ` (+${formatUsd(balance.grantedBalance)} granted)`;
+    parts.push(`balance ${formatUsd(balance.balance)}${granted}`);
+  }
+  const degraded = status.failed.length > 0 ? ` | unavailable: ${status.failed.join(", ")}` : "";
+  return `Billing: ${parts.join(" | ")}${degraded}`;
 }

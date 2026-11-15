@@ -152,15 +152,29 @@ export default createProvider({
   footerKey: "phala",
   logPrefix: "[phala]",
   baseUrlAliases: ["PHALA_CLOUD_API_PREFIX", "PHALA_BASE_URL", "PHALA_CLOUD_BASE_URL"],
+  // Usage/balance display in /phala-settings. The console management API
+  // does NOT accept the inference (sk-*) key; users create a workspace API
+  // token at cloud.phala.com → Settings → API Keys and expose it via
+  // PHALA_CLOUD_API_KEY (env) or `billing.apiKey` in the config file.
+  billing: {
+    apiKeyEnv: "PHALA_CLOUD_API_KEY",
+    consoleUrl: "https://cloud.phala.com",
+    // Bearer-authenticated; embeds workspace credits, so OAuth login alone
+    // can show the balance without a console API token.
+    selfUrl: "https://cloud-api.phala.com/api/v1/private_ai/self",
+    // Bearer-authenticated daily usage (same ClickHouse source and response
+    // shape as the console /redpill/usage/daily endpoint).
+    usageDailyUrl: "https://cloud-api.phala.com/api/v1/private_ai/usage/daily",
+  },
   fallbackModels: [
     {
-      id: "phala/qwen3.5-27b",
+      id: "qwen/qwen3.5-27b",
       name: "Phala Qwen3.5 27B",
       reasoning: true,
       input: ["text"],
-      cost: { input: 0.3, output: 2.4, cacheRead: 0, cacheWrite: 0 },
-      contextWindow: 262000,
-      maxTokens: 8192,
+      cost: { input: 0.3, output: 2.4, cacheRead: 0.03, cacheWrite: 0 },
+      contextWindow: 262144,
+      maxTokens: 65536,
     },
   ],
   oauth: {

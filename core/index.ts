@@ -26,6 +26,7 @@ import {
   type ExtensionFactory,
   readStoredCredential,
 } from "@earendil-works/pi-coding-agent";
+import { typesafeSystemOneApi } from "@earendil-works/pi-ai/api/typesafe-system-one.lazy";
 import { type SettingItem, SettingsList, truncateToWidth } from "@earendil-works/pi-tui";
 import os from "node:os";
 
@@ -40,7 +41,6 @@ import {
 } from "./src/config.ts";
 import {
   API_KEY_ENV,
-  FOOTER_STATUS_KEY,
   HEADER_RECEIPT_ID,
   LOG_PREFIX,
   PROVIDER_ID,
@@ -54,10 +54,16 @@ import {
   fallbackModels,
   mapAciServerModel,
 } from "./src/models.ts";
+import {
+  billingDashboardUrl,
+  fetchBillingSnapshot,
+  fetchSelfCredits,
+  fetchSelfUsage,
+} from "./src/billing.ts";
+import { openExternalUrl } from "./src/open-url.ts";
 import { isAciProjectConfigApproved } from "./src/project-trust.ts";
 import {
   AciConnectionManager,
-  type PinningState,
   fetchReceipt,
   fetchSession,
   summarizeReceipt,
@@ -65,26 +71,25 @@ import {
 } from "./src/aci-connection.ts";
 import {
   type AciConfigScope,
+  type BillingLineStatus,
   THINKING_FORMAT_VALUES,
+  billingSummary,
   buildSettingsTheme,
+  catalogSummary,
   formatScopeDescription,
   modelRegistrationSummary,
   settingsTitle,
   verifySummary,
+  type CatalogStatus,
 } from "./src/settings-ui.ts";
-
-/** TLS SPKI pin state for the configured base host, shown in the footer. */
-type PinningStatus = PinningState;
 
 interface AciRuntimeState {
   cwd: string;
   config: AciCloudConfig;
   projectTrusted: boolean;
   rawModels: AciServerModel[];
-  /** Verified ACI connection + pinning gate (footer status source). */
+  /** Verified ACI connection + pinning gate (fail-closed inference). */
   connection: AciConnectionManager;
-  /** TLS SPKI pin status for the configured base host (attested, per session). */
-  pinning?: PinningStatus;
   overrides?: AciCloudConfigPatch;
 }
 
@@ -130,12 +135,65 @@ function modelsFromState(state: AciRuntimeState): ReturnType<typeof fallbackMode
  * Default posture is fail CLOSED: with `pinning.enabled` (the default) an
  * unattestable session blocks inference with a clear error rather than
  * silently downgrading to CA-TLS. Users can opt into the old fail-open
- * behavior via `verify.failOpenOnUnpinned` (runs unpinned with a footer
+ * behavior via `verify.failOpenOnUnpinned` (runs unpinned with a console
  * warning). The manager owns the details (quote-verified attestation,
  * pinned fail-closed fetch, bootstrap exemptions).
  */
 async function installAttestedTlsPin(state: AciRuntimeState): Promise<void> {
-  state.pinning = await state.connection.establish(state.config, resolveApiKey());
+  await state.connection.establish(state.config, resolveApiKey());
+}
+
+/** Where the active API key comes from and whether it is usable. */
+function resolveAuthStatus(): { ok: boolean; source: string } {
+  try {
+    const stored = readStoredCredential(PROVIDER_ID);
+    if (stored?.type === "oauth" && typeof stored.access === "string" && stored.access) {
+      const expires = stored.expires;
+      if (typeof expires === "number" && Number.isFinite(expires) && expires <= Date.now()) {
+        return { ok: false, source: "stored OAuth (expired)" };
+      }
+      return { ok: true, source: stored.username ? `OAuth: ${stored.username}` : "stored OAuth" };
+    }
+    if (stored?.type === "api_key" && typeof stored.key === "string" && stored.key) {
+      return { ok: true, source: "stored API key" };
+    }
+  } catch {
+    // auth.json unreadable; fall through to env.
+  }
+  if (process.env[API_KEY_ENV]?.trim()) return { ok: true, source: `${API_KEY_ENV} env` };
+  return { ok: false, source: "none" };
+}
+
+/** Live snapshot of auth + catalog state for the settings summary. */
+function buildCatalogStatus(state: AciRuntimeState): CatalogStatus {
+  const models = modelsFromState(state);
+  const chatCount = models.filter((m) => (m.type ?? "chat") === "chat").length;
+  const classifierCount = models.filter((m) => m.type === "classifier").length;
+  const auth = resolveAuthStatus();
+  return {
+    authenticated: auth.ok,
+    authSource: auth.source,
+    chatCount,
+    classifierCount,
+    fallback: state.rawModels.length === 0,
+  };
+}
+
+/**
+ * Re-pull the /v1/models catalog and re-register the provider. The discovery
+ * at extension load is a one-time snapshot: credentials may appear later
+ * (e.g. /login after startup), the first fetch may have failed, and the
+ * gateway catalog may change. Refresh on every session start and whenever
+ * the settings page opens. A failed refresh keeps the current snapshot (or
+ * the fallback catalog).
+ */
+async function refreshDiscoveredModels(pi: ExtensionAPI, state: AciRuntimeState): Promise<void> {
+  const apiKey = resolveApiKey();
+  if (!apiKey) return;
+  const discovered = await discoverAciModels(apiKey, state.config);
+  if (discovered.raw.length === 0) return;
+  state.rawModels = discovered.raw;
+  registerAciProvider(pi, state);
 }
 
 function registerAciProvider(pi: ExtensionAPI, state: AciRuntimeState): void {
@@ -147,6 +205,11 @@ function registerAciProvider(pi: ExtensionAPI, state: AciRuntimeState): void {
     api: "openai-completions",
     authHeader: true,
     models: modelsFromState(state),
+    // Decision (classifier) catalog entries are served via the System One
+    // protocol at POST {baseUrl}/systemone; wire pi-ai's built-in client so
+    // models.classify() routes to it. Without this the models register but
+    // every classify call fails with "no classifier implementation".
+    classifiers: { "typesafe-system-one": typesafeSystemOneApi() },
     ...(oauth ? { oauth } : {}),
   });
 }
@@ -163,7 +226,6 @@ function reloadEffectiveConfig(
   state.cwd = cwd;
   state.config = config;
   state.projectTrusted = projectTrusted;
-  state.pinning = undefined;
   return config;
 }
 
@@ -175,33 +237,6 @@ function applyEffectiveConfig(
 ): void {
   reloadEffectiveConfig(state, cwd, projectTrusted);
   registerAciProvider(pi, state);
-}
-
-function updateFooter(
-  ctx: { ui: { setStatus: (key: string, text: string | undefined) => void } },
-  state: AciRuntimeState,
-): void {
-  try {
-    ctx.ui.setStatus(FOOTER_STATUS_KEY, pinSuffix(state));
-  } catch {
-    // The session may have been replaced/reloaded between an async update and
-    // this render; the captured ctx is stale. Nothing to render to.
-  }
-}
-
-/** Short footer suffix describing the TLS pin state. */
-function pinSuffix(state: AciRuntimeState): string {
-  if (!state.config.pinning.enabled) return "";
-  switch (state.pinning?.status) {
-    case "pinned":
-      return " | tls-pinned";
-    case "unpinned":
-      return " | UNPINNED";
-    case "blocked":
-      return " | PIN REQUIRED";
-    default:
-      return " | pin: pending";
-  }
 }
 
 async function openSettingsMenu(
@@ -218,9 +253,82 @@ async function openSettingsMenu(
   let scope: AciConfigScope = projectTrusted ? "project" : "home";
   let dirty = false;
 
+  // Billing/usage display (profile-gated): the console API token comes from
+  // the effective config (billing.apiKey) or the profile's billing env var.
+  const billingProfile = profile().billing;
+  const billingToken = state.config.billing?.apiKey;
+  // No console token: the Bearer private_ai endpoints (inference-key auth)
+  // still expose workspace credits + daily usage, so OAuth login alone
+  // shows both.
+  const inferenceKey = billingProfile?.selfUrl && !billingToken ? resolveApiKey() : "";
+  let billingStatus: BillingLineStatus | undefined = billingProfile
+    ? {
+        tokenPresent: Boolean(billingToken),
+        apiKeyEnv: billingProfile.apiKeyEnv,
+        loading: Boolean(billingToken) || Boolean(inferenceKey),
+        failed: [],
+      }
+    : undefined;
+
   await ctx.ui.custom<void>((tui, theme, _keybindings, done) => {
     const settingsTheme = buildSettingsTheme(theme);
     let list: SettingsList;
+
+    // Opening the settings page refreshes the catalog snapshot; re-render
+    // when the new list lands so the summary shows current counts.
+    void refreshDiscoveredModels(pi, state)
+      .then(() => tui.requestRender())
+      .catch(() => {});
+
+    // Fetch today's usage + balance once per open (60s client cache matches
+    // the server-side cache on the usage endpoint; no polling).
+    if (billingProfile && billingToken) {
+      void fetchBillingSnapshot(billingToken, { consoleUrl: billingProfile.consoleUrl })
+        .then((snapshot) => {
+          billingStatus = {
+            tokenPresent: true,
+            apiKeyEnv: billingProfile.apiKeyEnv,
+            loading: false,
+            usage: snapshot.usage,
+            balance: snapshot.balance,
+            failed: snapshot.failed,
+          };
+          tui.requestRender();
+        })
+        .catch(() => {
+          billingStatus = {
+            tokenPresent: true,
+            apiKeyEnv: billingProfile.apiKeyEnv,
+            loading: false,
+            failed: ["usage", "balance"],
+          };
+          tui.requestRender();
+        });
+    }
+
+    if (billingProfile && inferenceKey) {
+      void Promise.allSettled([fetchSelfCredits(inferenceKey), fetchSelfUsage(inferenceKey)])
+        .then(([creditsRes, usageRes]) => {
+          // A console token configured mid-open wins over the OAuth path.
+          if (billingStatus?.tokenPresent) return;
+          const failed: string[] = [];
+          if (creditsRes.status === "rejected") failed.push("balance");
+          if (usageRes.status === "rejected") failed.push("usage");
+          const credits = creditsRes.status === "fulfilled" ? creditsRes.value : undefined;
+          billingStatus = {
+            tokenPresent: false,
+            apiKeyEnv: billingProfile.apiKeyEnv,
+            loading: false,
+            failed,
+            usage: usageRes.status === "fulfilled" ? usageRes.value : undefined,
+            oauthBalance: credits && {
+              balance: credits.balance,
+              grantedBalance: credits.grantedBalance,
+            },
+          };
+          tui.requestRender();
+        });
+    }
 
     const refreshValues = () => {
       list.updateValue("scope", scope);
@@ -275,6 +383,16 @@ async function openSettingsMenu(
         save();
         return;
       }
+      if (id === "billing") {
+        // Action item, not a persisted setting: Enter opens the console
+        // billing dashboard.
+        if (billingProfile) {
+          const url = billingDashboardUrl(billingProfile.consoleUrl);
+          openExternalUrl(url);
+          ctx.ui.notify(`Opened ${url}`, "info");
+        }
+        return;
+      }
     };
 
     const scopeItem: SettingItem = {
@@ -306,7 +424,7 @@ async function openSettingsMenu(
       {
         id: "failOpenOnUnpinned",
         label: "Fail open when unpinned",
-        description: "Off (default): block inference until an attested TLS pin is established. On: run unpinned with a footer warning when the attestation is unreachable.",
+        description: "Off (default): block inference until an attested TLS pin is established. On: run unpinned with a console warning when the attestation is unreachable.",
         currentValue: drafts[scope].verify.failOpenOnUnpinned ? "true" : "false",
         values: ["true", "false"],
       },
@@ -318,6 +436,15 @@ async function openSettingsMenu(
         values: ["true", "false"],
       },
     ];
+    if (billingProfile) {
+      items.push({
+        id: "billing",
+        label: "Billing dashboard",
+        description: `Open the ${getLabel()} billing page in your browser`,
+        currentValue: "open ↗",
+        values: ["open ↗"],
+      });
+    }
 
     list = new SettingsList(items, items.length, settingsTheme, onChange, () => done(), {
       enableSearch: true,
@@ -331,7 +458,9 @@ async function openSettingsMenu(
           truncateToWidth(theme.fg("accent", theme.bold(settingsTitle())), width),
           "",
           truncateToWidth(modelRegistrationSummary(drafts[scope]), width),
+          truncateToWidth(catalogSummary(buildCatalogStatus(state)), width),
           truncateToWidth(verifySummary(drafts[scope]), width),
+          ...(billingStatus ? [truncateToWidth(billingSummary(billingStatus), width)] : []),
           "",
           ...list.render(width),
         ];
@@ -455,10 +584,19 @@ export function createProvider(
       const projectTrusted = isAciProjectConfigApproved(ctx);
       applyEffectiveConfig(pi, state, ctx.cwd, projectTrusted);
       // Resolve the attested SPKI from a fresh report and pin TLS for this
-      // session (fail-closed; footer shows "PIN REQUIRED" if it cannot be
-      // done, unless the user opted into failOpenOnUnpinned).
-      await installAttestedTlsPin(state);
-      updateFooter(ctx, state);
+      // session. Fire-and-forget: pi awaits session_start handlers serially,
+      // and the attestation (report fetch + online PCCS quote verification +
+      // pinned probe) can take seconds — awaiting it stalled every /new,
+      // /resume and settings-save reload. The fail-closed gate is installed
+      // synchronously inside establish(), so requests in the attestation
+      // window wait (abortably) on the in-flight establish instead of
+      // downgrading to CA-TLS.
+      void installAttestedTlsPin(state).catch(() => {});
+      // Refresh the catalog snapshot: credentials may have appeared since
+      // the extension loaded (e.g. /login in a previous session), the first
+      // fetch may have failed, and the gateway catalog may have changed.
+      // Fire-and-forget so session start is not blocked on the network.
+      void refreshDiscoveredModels(pi, state).catch(() => {});
     });
 
     // Cheap header capture ONLY: remember the latest x-receipt-id so the
@@ -476,7 +614,7 @@ export function createProvider(
 
     const settingsCommand = `${PROVIDER_ID}-settings`;
     pi.registerCommand(settingsCommand, {
-      description: `Configure ${getLabel()} (models, thinking, TLS pinning, verification)`,
+      description: `Configure ${getLabel()} (models, thinking, TLS pinning, billing)`,
       handler: async (_args, ctx) => {
         if (ctx.mode !== "tui") {
           ctx.ui.notify(`${settingsCommand} requires TUI mode`, "error");
@@ -515,6 +653,23 @@ export { PROVIDER_ID, PROVIDER_VERSION };
 export { profile as getProviderProfile } from "./src/profile.ts";
 export { loadAciCloudConfig } from "./src/config.ts";
 export { discoverAciModels, mapAciServerModel, inferThinkingFormat } from "./src/models.ts";
+export {
+  billingDashboardUrl,
+  clearBillingCache,
+  clearSelfCreditsCache,
+  clearSelfUsageCache,
+  fetchBillingSnapshot,
+  fetchSelfCredits,
+  fetchSelfUsage,
+  formatCount,
+  formatUsd,
+  todayWindow,
+  type BillingBalance,
+  type BillingSnapshot,
+  type DailyUsageSummary,
+  type SelfCredits,
+} from "./src/billing.ts";
+export { openExternalUrl } from "./src/open-url.ts";
 // Attestation/audit helpers for consumers. The prevention layer (verified
 // ACI connection + pinned fetch) lives in src/aci-connection.ts; receipt
 // verification is not part of this plugin.

@@ -98,6 +98,11 @@ export class AciConnectionManager {
   private baseFetch?: typeof globalThis.fetch;
   private lastReceiptId?: string;
   private lastAttestationError?: string;
+  /** Monotonic token that invalidates superseded in-flight establish() attempts. */
+  private generation = 0;
+  /** In-flight establish(), so requests arriving during the fail-closed
+   *  attestation window can wait (abortably) instead of failing. */
+  private inflight?: Promise<PinningState>;
 
   /** TLS SPKI pin state for the configured base origin (footer source). */
   state: PinningState = { host: "", status: "disabled" };
@@ -128,44 +133,96 @@ export class AciConnectionManager {
    * config. Never throws: failures land in `state` as unpinned/blocked per
    * the fail-open setting, and the fetch wrapper keeps the fail-closed gate
    * in the blocked case.
+   *
+   * Concurrency contract (session_start, settings reload and teardown can
+   * overlap, and callers are encouraged to fire-and-forget):
+   *  - the fail-closed gate (origin + wrapper) is installed SYNCHRONOUSLY,
+   *    before any await, so the async attestation never opens a cleartext
+   *    window and no code path uninstalls the gate mid-establish;
+   *  - each attempt carries a generation token: a superseded attempt closes
+   *    the connection it just built and leaves the newer state untouched.
    */
   async establish(config: AciCloudConfig, apiKey: string): Promise<PinningState> {
-    await this.reset();
+    const pending = this.doEstablish(config, apiKey);
+    this.inflight = pending;
+    try {
+      return await pending;
+    } finally {
+      if (this.inflight === pending) this.inflight = undefined;
+    }
+  }
+
+  private async doEstablish(config: AciCloudConfig, apiKey: string): Promise<PinningState> {
+    const gen = ++this.generation;
     const host = hostOfUrl(config.baseUrl);
     const normalized = host ?? config.baseUrl;
 
+    // The previous connection keeps serving until the new one is verified;
+    // close it off the critical path (undici close() waits for in-flight
+    // requests and must not delay the state transition).
+    const previous = this.connection;
+    const closePrevious = () => {
+      if (previous) void previous.close().catch(() => {});
+    };
+
     if (!config.pinning.enabled) {
+      this.uninstallFetchWrapper();
+      this.origin = undefined;
+      this.connection = undefined;
       this.state = { host: normalized, status: "disabled" };
+      closePrevious();
       return this.state;
     }
     if (!host || !apiKey) {
+      this.uninstallFetchWrapper();
+      this.origin = undefined;
+      this.connection = undefined;
       this.state = { host: normalized, status: "unpinned" };
+      closePrevious();
       return this.state;
     }
 
+    // Fail-closed gate FIRST: from here until a verified connection is
+    // attached, inference to this origin is blocked rather than downgraded
+    // to plain CA-TLS — even though the attestation below is asynchronous.
+    this.origin = new URL(config.baseUrl).origin;
+    this.installFetchWrapper();
+    if (!previous) {
+      this.state = { host, status: "blocked" };
+    }
+
     try {
-      this.connection = await connectAci({
+      const connection = await connectAci({
         baseURL: getGatewayRoot(config.baseUrl),
         serving: { requireReceipt: false, requireVerified: false },
         timeoutMs: DEFAULT_ATTESTATION_FETCH_TIMEOUT_MS,
         bootstrapFetch: authorizedFetch(apiKey),
         proxy: envProxy(),
       });
-      this.origin = new URL(config.baseUrl).origin;
-      this.installFetchWrapper();
+      if (gen !== this.generation) {
+        // Superseded by a newer establish()/reset(): close the connection
+        // this attempt just built and leave the newer state untouched.
+        void connection.close().catch(() => {});
+        return this.state;
+      }
+      this.connection = connection;
       this.lastAttestationError = undefined;
       this.state = { host, status: "pinned" };
+      closePrevious();
     } catch (error) {
+      if (gen !== this.generation) return this.state;
       this.lastAttestationError = error instanceof Error ? error.message : String(error);
       console.error(`${LOG_PREFIX} ACI connection failed:`, error);
-      // Fail closed: no connection, but still wrap so inference to this
-      // origin is blocked until pinning succeeds (or the user opts into
-      // fail-open, which removes the block by tearing the wrapper down).
-      this.origin = new URL(config.baseUrl).origin;
+      // Fail closed: drop the old connection and keep the gate (installed
+      // above) blocking, unless the user opted into fail-open, which tears
+      // the gate down and runs unpinned with a console warning.
+      this.connection = undefined;
+      closePrevious();
       if (config.verify.failOpenOnUnpinned === true) {
+        this.uninstallFetchWrapper();
+        this.origin = undefined;
         this.state = { host, status: "unpinned" };
       } else {
-        this.installFetchWrapper();
         this.state = { host, status: "blocked" };
       }
     }
@@ -174,6 +231,9 @@ export class AciConnectionManager {
 
   /** Tear down the connection and the fetch wrapper (config change / unload). */
   async reset(): Promise<void> {
+    // Invalidate any in-flight establish() so its late completion cannot
+    // resurrect state or reinstall the wrapper.
+    this.generation++;
     this.uninstallFetchWrapper();
     const connection = this.connection;
     this.connection = undefined;
@@ -213,20 +273,85 @@ export class AciConnectionManager {
         return this.baseFetch!(input, init);
       }
       if (this.connection) {
-        return this.connection.fetch(input, init);
+        return this.fetchWithAbort(input, init);
       }
       if (this.state.status === "blocked") {
-        return Promise.reject(
-          new Error(
-            `${LOG_PREFIX} host ${url.hostname} requires an attested TLS pin but none is established; ` +
-              `blocked to avoid a cleartext downgrade. Check the attestation/tail the logs, or ` +
-              `disable pinning in settings to run unpinned.`,
-          ),
-        );
+        if (this.inflight) {
+          // Attestation is in flight: wait for it (abortably) rather than
+          // failing a request that arrived inside the fail-closed window.
+          return this.fetchAfterEstablish(this.inflight, input, init);
+        }
+        return Promise.reject(new Error(blockedMessage(this.state.host || url.hostname)));
       }
     }
     return this.baseFetch!(input, init);
   };
+
+  /**
+   * Fetch through the verified connection, but race the caller's abort
+   * signal. The verifier's secureFetch can block inline on identity
+   * re-verification (attestation + PCCS) WITHOUT honoring the caller's
+   * signal — that left Esc/cancel unresponsive for the whole refresh. The
+   * original signal still propagates through `init`/the Request to the
+   * transport, so once response headers arrive the normal (fast) abort path
+   * takes over; this race only covers the pre-response window.
+   */
+  private fetchWithAbort(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+    const connection = this.connection;
+    if (!connection) {
+      return Promise.reject(new Error(`${LOG_PREFIX} no verified ACI connection`));
+    }
+    const signal = signalOf(input, init);
+    if (!signal) return connection.fetch(input, init);
+    if (signal.aborted) {
+      // Pre-aborted: reject without touching the connection.
+      return Promise.reject(abortReason(signal));
+    }
+    return new Promise<Response>((resolve, reject) => {
+      const onAbort = () => reject(abortReason(signal));
+      signal.addEventListener("abort", onAbort, { once: true });
+      if (signal.aborted) {
+        // Aborted between the pre-check and listener attachment.
+        signal.removeEventListener("abort", onAbort);
+        reject(abortReason(signal));
+        return;
+      }
+      connection.fetch(input, init).then(
+        (response) => {
+          signal.removeEventListener("abort", onAbort);
+          if (signal.aborted) {
+            // Abort won while the verifier was busy. Don't hand a live
+            // response to a cancelled caller: drain it so no stream (or the
+            // verifier's receipt digest clone) leaks behind the abort.
+            void response.body?.cancel().catch(() => {});
+            reject(abortReason(signal));
+            return;
+          }
+          resolve(response);
+        },
+        (error) => {
+          signal.removeEventListener("abort", onAbort);
+          reject(error);
+        },
+      );
+    });
+  }
+
+  /** Wait (abortably) for an in-flight establish, then re-dispatch. */
+  private async fetchAfterEstablish(
+    inflight: Promise<PinningState>,
+    input: RequestInfo | URL,
+    init?: RequestInit,
+  ): Promise<Response> {
+    await raceWithSignal(inflight, signalOf(input, init));
+    if (this.connection) return this.fetchWithAbort(input, init);
+    if (this.state.status === "blocked") {
+      throw new Error(blockedMessage(this.state.host));
+    }
+    // Establish ended unpinned/disabled (fail-open opt-in or pinning off):
+    // the wrapper is already uninstalled, so pass through directly.
+    return (this.baseFetch ?? globalThis.fetch)(input, init);
+  }
 
   /**
    * Curated attestation display for the /attestation command. Uses the
@@ -245,6 +370,49 @@ export class AciConnectionManager {
     });
     return renderTranscriptSummary(transcript);
   }
+}
+
+/** AbortSignal for a fetch call, whether carried by init or a Request input. */
+function signalOf(input: RequestInfo | URL, init?: RequestInit): AbortSignal | undefined {
+  return init?.signal ?? (input instanceof Request ? input.signal : undefined) ?? undefined;
+}
+
+function abortReason(signal: AbortSignal): unknown {
+  return signal.reason ?? new DOMException("This operation was aborted", "AbortError");
+}
+
+/** Race a promise against an abort signal; every path drops the listener. */
+function raceWithSignal<T>(promise: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+  if (!signal) return promise;
+  if (signal.aborted) return Promise.reject(abortReason(signal));
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(abortReason(signal));
+    signal.addEventListener("abort", onAbort, { once: true });
+    if (signal.aborted) {
+      // Aborted between the pre-check and listener attachment.
+      signal.removeEventListener("abort", onAbort);
+      reject(abortReason(signal));
+      return;
+    }
+    promise.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (error) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(error);
+      },
+    );
+  });
+}
+
+function blockedMessage(host: string): string {
+  return (
+    `${LOG_PREFIX} host ${host} requires an attested TLS pin but none is established; ` +
+    `blocked to avoid a cleartext downgrade. Check the attestation/tail the logs, or ` +
+    `disable pinning in settings to run unpinned.`
+  );
 }
 
 function urlOfInput(input: RequestInfo | URL): URL | undefined {
