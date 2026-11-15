@@ -34,7 +34,7 @@
     "check": "tsc --noEmit"
   },
   "dependencies": {
-    "@phala/aci-verifier": "0.11.0"
+    "@phala/aci-verifier": "^0.11.1"
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",
