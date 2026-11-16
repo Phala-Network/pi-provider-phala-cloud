@@ -295,8 +295,9 @@ export function mapAciServerModel(
 
   if (kind === "classifier") {
     // Decision model: served via the TypeSafe System One protocol at
-    // POST {baseUrl}/systemone (pi-ai's "typesafe-system-one" classifier
-    // API). No compat/thinking handling — classifiers don't stream chat.
+    // POST {baseUrl}/systemone (the "typesafe-system-one" classifier API;
+    // transport in src/system-one.ts). No compat/thinking handling —
+    // classifiers don't stream chat.
     return {
       id: model.id,
       name,
